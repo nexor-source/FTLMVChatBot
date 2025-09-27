@@ -48,6 +48,7 @@ class Registry:
     events: dict  # name -> (file_path: Path, element)
     event_lists: dict  # name -> list[element]
     text_lists: dict  # name -> list[str]
+    ship_defs: dict  # ship_name -> { outcome_tag -> {'load': str} or {'el': Element} }
 
 
 def _build_registry(data_dir: Path):
@@ -56,6 +57,7 @@ def _build_registry(data_dir: Path):
     events = {}
     event_lists = {}
     text_lists = {}
+    ship_defs = {}
 
     xml_files = list(
         f
@@ -99,7 +101,24 @@ def _build_registry(data_dir: Path):
             except Exception:
                 continue
 
-    return Registry(data_dir=data_dir, events=events, event_lists=event_lists, text_lists=text_lists)
+        # Ship defeat mappings
+        for el in root.iter():
+            try:
+                if _strip_namespace(getattr(el, "tag", "")) == "ship" and el.attrib.get("name"):
+                    sname = el.attrib.get("name")
+                    defs = ship_defs.setdefault(sname, {})
+                    for k in ("surrender", "destroyed", "deadCrew", "escape", "gotaway"):
+                        for sub in [c for c in list(el) if _strip_namespace(getattr(c, "tag", "")) == k]:
+                            entry = {}
+                            if 'load' in sub.attrib:
+                                entry['load'] = sub.attrib.get('load')
+                            else:
+                                entry['el'] = sub
+                            defs[k] = entry
+            except Exception:
+                continue
+
+    return Registry(data_dir=data_dir, events=events, event_lists=event_lists, text_lists=text_lists, ship_defs=ship_defs)
 
 
 def _node_text(el) -> str:
@@ -202,6 +221,13 @@ def _extract_effects(event_el) -> List[str]:
                 tgt = ch.attrib.get("target")
                 amt = ch.attrib.get("amount")
                 effects.append(f"status({typ}:{tgt} {amt})")
+            elif tag == "modifyPursuit":
+                amt = ch.attrib.get("amount")
+                if amt is None or amt == "":
+                    effects.append("pursuit ?")
+                else:
+                    sign = "" if amt.startswith("-") else "+"
+                    effects.append(f"pursuit {sign}{amt}")
             elif tag == "system":
                 nm = ch.attrib.get("name")
                 effects.append(f"system:{nm}")
@@ -227,7 +253,7 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
 
     # Event lead text
     txt_nodes = [ch for ch in list(event_el) if _strip_namespace(getattr(ch, "tag", "")) == "text"]
-    txt = _text_from_text_element(txt_nodes[0], reg) if txt_nodes else ""
+    txt = _abbrev_text_component(_text_from_text_element(txt_nodes[0], reg)) if txt_nodes else ""
     if txt:
         out_lines.append("  " * depth + f"文本: {txt}")
 
@@ -239,7 +265,7 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
         if _strip_namespace(getattr(ch, "tag", "")) != "choice":
             continue
         ctext_nodes = [t for t in list(ch) if _strip_namespace(getattr(t, "tag", "")) == "text"]
-        ctext = _text_from_text_element(ctext_nodes[0], reg) if ctext_nodes else ""
+        ctext = _abbrev_text_component(_text_from_text_element(ctext_nodes[0], reg)) if ctext_nodes else ""
         meta = []
         if ch.attrib.get("blue") in ("true", "blue"):
             meta.append("blue")
@@ -257,6 +283,8 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
         def handle_event_ref(ev_el):
             load = ev_el.attrib.get("load")
             if load:
+                if load == "COMBAT_CHECK":
+                    return
                 # This load can point to an <event name> or an <eventList name>
                 if load in reg.events:
                     key = f"E:{load}"
@@ -323,7 +351,76 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
                         _summarize_event(item, reg, depth + 2, max_depth, visited, out_lines)
 
 
-def _show_single_event_detail(entry: EventEntry, query: str, reg: Registry, max_depth: int = 3):
+    # Also show combat outcomes for direct hostile ships under this event
+    for node in list(event_el):
+        try:
+            if _strip_namespace(getattr(node, "tag", "")) != "ship":
+                continue
+            if node.attrib.get("hostile", "false").lower() != "true":
+                continue
+            ship_key = node.attrib.get("load") or node.attrib.get("name") or "(未知)"
+            out_lines.append("  " * depth + f"战斗: {ship_key}")
+            # Collect inline outcomes
+            inline = {k: [t for t in list(node) if _strip_namespace(getattr(t, "tag", "")) == k]
+                      for k in ("surrender", "destroyed", "deadCrew", "escape", "gotaway")}
+            # Fallback to registry ship definitions when missing inline
+            defs = reg.ship_defs.get(ship_key) if hasattr(reg, 'ship_defs') else None
+
+            def nodes_for(key: str):
+                if inline.get(key):
+                    return inline[key]
+                if not defs:
+                    return []
+                ent = defs.get(key)
+                if not ent:
+                    return []
+                if 'load' in ent:
+                    d = type(event_el)('event')
+                    d.attrib['load'] = ent['load']
+                    return [d]
+                if 'el' in ent:
+                    return [ent['el']]
+                return []
+
+            for k, label in (("surrender", "投降"), ("destroyed", "摧毁(胜利)"), ("deadCrew", "船员全灭(胜利)"), ("escape", "尝试逃跑"), ("gotaway", "敌舰逃走")):
+                subs = nodes_for(k)
+                if not subs:
+                    continue
+                out_lines.append("  " * (depth + 1) + f"{label}:")
+                for sub in subs:
+                    if hasattr(sub, 'attrib') and sub.attrib.get('load'):
+                        if sub.attrib.get('load') == 'COMBAT_CHECK':
+                            continue
+                        handle_event_ref(sub)
+                    else:
+                        _summarize_event(sub, reg, depth + 2, max_depth, visited, out_lines)
+        except Exception:
+            continue
+
+
+def _clip_line(s: str, max_len: int) -> str:
+    try:
+        if max_len and max_len > 0 and len(s) > max_len:
+            return s[: max_len - 1] + "…"
+        return s
+    except Exception:
+        return s
+
+
+def _abbrev_text_component(s: str, head: int = 10, tail: int = 10) -> str:
+    try:
+        if s is None:
+            return ""
+        if head < 0 or tail < 0:
+            return s
+        if len(s) <= head + tail:
+            return s
+        return s[:head] + "..." + s[-tail:]
+    except Exception:
+        return s
+
+
+def _show_single_event_detail(entry: EventEntry, query: str, reg: Registry, max_depth: int = 3, only_outcomes: bool = False, max_line_len: int = 120):
     root = _parse_xml_etree(entry.file)
     if root is None:
         print("[警告] 无法解析该事件文件，跳过详细展开。")
@@ -370,8 +467,24 @@ def _show_single_event_detail(entry: EventEntry, query: str, reg: Registry, max_
             print("分支预览：")
             _summarize_event(target_event_el, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines)
 
+        if only_outcomes:
+            keys = ("战斗", "投降", "摧毁", "船员全灭", "逃跑", "敌舰逃走")
+            start_idx = None
+            original_lines = list(lines)
+            for i, ln in enumerate(lines):
+                if any(k in ln for k in keys):
+                    start_idx = i
+                    break
+            if start_idx is not None:
+                lines = lines[start_idx:]
+            else:
+                lines = [ln for ln in lines if any(k in ln for k in keys)]
+            if not lines:
+                # No combat outcomes found; fall back to full branch
+                lines = original_lines
+
         for ln in lines:
-            print(ln)
+            print(_clip_line(ln, max_line_len))
 
 
 def _strip_namespace(tag: str) -> str:
@@ -512,6 +625,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Search FTL MV event texts and print event names.")
     ap.add_argument("--data", dest="data", default=str(Path("data")), help="Path to data directory (default: ./data)")
     ap.add_argument("--max-depth", dest="max_depth", type=int, default=10, help="Max recursion depth for branch expansion")
+    ap.add_argument("--only-outcomes", dest="only_outcomes", action="store_true", help="Only show combat outcomes and rewards (hide pre-battle choices/text)")
+    ap.add_argument("--max-line-len", dest="max_line_len", type=int, default=120, help="Max length per output line before truncation (adds …)")
     args = ap.parse_args(argv)
 
     data_dir = Path(args.data)
@@ -541,7 +656,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print("仅定位到 1 个事件，解析分支中……")
                 reg = _build_registry(data_dir)
                 entry = next(e for e in entries if e.name == names[0])
-                _show_single_event_detail(entry, q, reg, max_depth=args.max_depth)
+                _show_single_event_detail(entry, q, reg, max_depth=args.max_depth, only_outcomes=args.only_outcomes, max_line_len=args.max_line_len)
             else:
                 for name in names:
                     print(name)

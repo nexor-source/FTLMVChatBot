@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Optional, List
 
-from .registry import index_events, build_registry, EventEntry
+from .registry import index_events, build_registry, EventEntry, Registry
 from .summarize import show_single_event_detail
 
 
@@ -29,6 +29,8 @@ def run_interactive(args: argparse.Namespace) -> int:
         return 2
 
     print(f"索引构建中: {data_dir} ...", flush=True)
+    # 先构建注册表（含祖先关系），再建立文本索引
+    reg = build_registry(data_dir)
     entries = index_events(data_dir)
     print(f"索引完成: 事件共 {len(entries)} 条（仅统计具名 <event>）。")
 
@@ -43,12 +45,13 @@ def run_interactive(args: argparse.Namespace) -> int:
             if not q:
                 continue
             names = _search(entries, q)
+            # 仅保留“最小事件”：去掉任何作为其它命中事件祖先的事件
+            names = _minimal_events(names, reg)
             if not names:
                 print("无匹配事件。")
                 continue
             if len(names) == 1:
                 print("仅定位到 1 个事件，解析分支中……")
-                reg = build_registry(data_dir)
                 entry = next(e for e in entries if e.name == names[0])
                 show_single_event_detail(
                     entry,
@@ -81,7 +84,22 @@ def _search(entries: List[EventEntry], query: str) -> List[str]:
     return results
 
 
+def _minimal_events(names: List[str], reg: Registry) -> List[str]:
+    """在一组匹配事件中，仅保留“最小事件”。
+
+    规则: 若 A 是 B 的祖先（A 出现在 reg.event_ancestors[B] 中），则丢弃 A。
+    这样当父事件与其嵌套的子事件同时匹配时，仅保留子事件。
+    """
+    name_set = set(names)
+    drop = set()
+    for m in names:
+        ancestors = reg.event_ancestors.get(m, [])
+        for a in ancestors:
+            if a in name_set:
+                drop.add(a)
+    return [n for n in names if n not in drop]
+
+
 def cli_main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     return run_interactive(args)
-

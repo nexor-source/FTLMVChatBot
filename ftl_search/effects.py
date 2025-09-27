@@ -51,6 +51,9 @@ def extract_effects(event_el) -> List[str]:
                 tgt = ch.attrib.get("target")
                 amt = ch.attrib.get("amount")
                 effects.append(f"status({typ}:{tgt} {amt})")
+            elif tag == "quest":
+                ev = ch.attrib.get("event") or "?"
+                effects.append(f"quest: {ev}")
             elif tag == "variable":
                 name = ch.attrib.get("name")
                 op = (ch.attrib.get("op") or "").lower()
@@ -93,4 +96,3 @@ def extract_effects(event_el) -> List[str]:
             seen.add(e)
             out.append(e)
     return out
-

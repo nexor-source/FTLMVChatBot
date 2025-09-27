@@ -35,6 +35,7 @@ class Registry:
     event_lists: Dict[str, List[Any]]
     text_lists: Dict[str, List[str]]
     ship_defs: Dict[str, Dict[str, Dict[str, Any]]]
+    event_ancestors: Dict[str, List[str]]  # 事件名 -> 其所有具名祖先事件名（外层->内层）
 
 
 def _strip_namespace(tag: str) -> str:
@@ -153,6 +154,7 @@ def build_registry(data_dir: Path) -> Registry:
     event_lists: Dict[str, List[Any]] = {}
     text_lists: Dict[str, List[str]] = {}
     ship_defs: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    event_ancestors: Dict[str, List[str]] = {}
 
     xml_files = [
         f
@@ -165,6 +167,20 @@ def build_registry(data_dir: Path) -> Registry:
         if root is not None:
             for name, el in _iter_named_events_etree(root):
                 events[name] = (fp, el)
+
+            # 递归计算具名事件的祖先链
+            def visit(node, ancestors: List[str]):
+                tag = _strip_namespace(getattr(node, "tag", ""))
+                cur_anc = ancestors
+                if tag == "event":
+                    nm = node.attrib.get("name")
+                    if nm:
+                        event_ancestors[nm] = list(ancestors)
+                        cur_anc = ancestors + [nm]
+                for ch in list(node):
+                    visit(ch, cur_anc)
+
+            visit(root, [])
 
             for el in root.iter():
                 try:
@@ -228,5 +244,5 @@ def build_registry(data_dir: Path) -> Registry:
         event_lists=event_lists,
         text_lists=text_lists,
         ship_defs=ship_defs,
+        event_ancestors=event_ancestors,
     )
-

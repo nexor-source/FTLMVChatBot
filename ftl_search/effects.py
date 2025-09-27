@@ -51,9 +51,27 @@ def extract_effects(event_el) -> List[str]:
                 tgt = ch.attrib.get("target")
                 amt = ch.attrib.get("amount")
                 effects.append(f"status({typ}:{tgt} {amt})")
+            elif tag == "upgrade":
+                sysname = ch.attrib.get("system") or "?"
+                amt = ch.attrib.get("amount") or "?"
+                sign = "" if str(amt).startswith("-") else "+"
+                effects.append(f"upgrade {sysname} {sign}{amt}")
             elif tag == "quest":
                 ev = ch.attrib.get("event") or "?"
                 effects.append(f"quest: {ev}")
+            elif tag == "removeCrew":
+                amt = ch.attrib.get("amount") or "1"
+                clone_ok = False
+                for gc in list(ch):
+                    if _strip_namespace(getattr(gc, "tag", "")) == "clone":
+                        if (gc.text or "").strip().lower() in ("true", "1"):
+                            clone_ok = True
+                            break
+                eff = f"crew -{amt}"
+                # 展示更清晰：标注可被克隆舱复活
+                if clone_ok:
+                    eff += " (可克隆复活)"
+                effects.append(eff)
             elif tag == "variable":
                 name = ch.attrib.get("name")
                 op = (ch.attrib.get("op") or "").lower()

@@ -35,16 +35,18 @@ class Registry:
     event_lists: Dict[str, List[Any]]
     text_lists: Dict[str, List[str]]
     ship_defs: Dict[str, Dict[str, Dict[str, Any]]]
-    event_ancestors: Dict[str, List[str]]  # 事件名 -> 其所有具名祖先事件名（外层->内层）
+    event_ancestors: Dict[str, List[str]]  # 事件名 -> 其所有具名祖先事件名（外层->内层）用来做“仅保留最小事件”逻辑
 
 
 def _strip_namespace(tag: str) -> str:
+    """移除 ElementTree 标签上的命名空间前缀，返回本地名。"""
     if tag.startswith("{"):
         return tag.split("}", 1)[1]
     return tag
 
 
 def _iter_named_events_etree(root) -> Iterable[Tuple[str, object]]:
+    """遍历 XML 树，产出所有具名 <event> 的 (name, element)。"""
     for el in root.iter():
         try:
             if _strip_namespace(getattr(el, "tag", "")) == "event":
@@ -56,6 +58,7 @@ def _iter_named_events_etree(root) -> Iterable[Tuple[str, object]]:
 
 
 def _gather_subtree_text(el) -> str:
+    """汇总元素子树所有可见文本，去多余空白并反转义 HTML 实体。"""
     parts: List[str] = []
     try:
         for s in el.itertext():
@@ -69,6 +72,7 @@ def _gather_subtree_text(el) -> str:
 
 
 def _parse_xml_etree(path: Path):
+    """解析 XML 文件，成功返回根节点，失败返回 None（容错）。"""
     try:
         return ET.parse(str(path)).getroot()
     except Exception:
@@ -88,6 +92,11 @@ _SHIP_NAME_ATTR_RE = re.compile(r"\bname\s*=\s*\"([^\"]+)\"", re.IGNORECASE)
 
 
 def _fallback_parse_events_text(path: Path) -> Iterable[Tuple[str, str]]:
+    """正则容错解析具名 <event> 的纯文本（仅用于索引/检索）。
+
+    返回: (事件名, 文本) 迭代器
+    限制: 非严格解析，适合在 XML 片段/不规范文件上构建索引。
+    """
     try:
         data = path.read_text(encoding="utf-8")
     except Exception:
@@ -112,6 +121,11 @@ def _fallback_parse_events_text(path: Path) -> Iterable[Tuple[str, str]]:
 
 
 def index_events(data_dir: Path) -> List[EventEntry]:
+    """扫描 data 目录，构建可搜索的事件条目列表（仅具名 <event>）。
+
+    输入: data_dir 数据目录
+    返回: EventEntry 列表（包含全文与去空白文本两种形式）
+    """
     xml_files = [
         f
         for f in data_dir.rglob("*")
@@ -150,6 +164,13 @@ def index_events(data_dir: Path) -> List[EventEntry]:
 
 
 def build_registry(data_dir: Path) -> Registry:
+    """完整解析 data，返回 Registry。
+
+    包含:
+    - 事件表/事件列表/文本列表
+    - 舰船败亡映射（destroyed/deadCrew/... → 事件或事件列表）
+    - 事件的具名祖先链（用于“仅保留最小事件”逻辑）
+    """
     events: Dict[str, Tuple[Path, Any]] = {}
     event_lists: Dict[str, List[Any]] = {}
     text_lists: Dict[str, List[str]] = {}

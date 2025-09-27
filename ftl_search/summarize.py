@@ -244,7 +244,7 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
             continue
 
 
-def show_single_event_detail(entry, query: str, reg: Registry, max_depth: int = 3, only_outcomes: bool = False, max_line_len: int = 120):
+def show_single_event_detail(entry, query: str, reg: Registry, max_depth: int = 3, only_outcomes: bool = False, max_line_len: int = 80):
     """展开单一事件: 定位文本、展示分支与效果。
 
     输入:
@@ -312,4 +312,3 @@ def show_single_event_detail(entry, query: str, reg: Registry, max_depth: int = 
 
     for ln in lines:
         print(clip_line(ln, max_line_len))
-

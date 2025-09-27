@@ -9,6 +9,7 @@ from typing import Optional, List
 
 from .registry import index_events, build_registry, EventEntry, Registry
 from .summarize import show_single_event_detail
+from .mem import get_memory_usage
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -17,7 +18,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap.add_argument("--data", dest="data", default=str(Path("data")), help="Path to data directory (default: ./data)")
     ap.add_argument("--max-depth", dest="max_depth", type=int, default=10, help="Max recursion depth for branch expansion")
     ap.add_argument("--only-outcomes", dest="only_outcomes", action="store_true", help="Only show combat outcomes and rewards (hide pre-battle choices/text)")
-    ap.add_argument("--max-line-len", dest="max_line_len", type=int, default=120, help="Max length per output line before truncation (adds …)")
+    ap.add_argument("--show-mem", dest="show_mem", action="store_true", help="显示内存占用 (RSS 或 tracemalloc)")
     return ap.parse_args(argv)
 
 
@@ -30,8 +31,14 @@ def run_interactive(args: argparse.Namespace) -> int:
 
     print(f"索引构建中: {data_dir} ...", flush=True)
     # 先构建注册表（含祖先关系），再建立文本索引
+    if args.show_mem:
+        _maybe_start_tracemalloc()
     reg = build_registry(data_dir)
+    if args.show_mem:
+        _print_mem("after build_registry")
     entries = index_events(data_dir)
+    if args.show_mem:
+        _print_mem("after index_events")
     print(f"索引完成: 事件共 {len(entries)} 条（仅统计具名 <event>）。")
 
     print("输入中文检索子串（Ctrl+C 或 Ctrl+D 退出）：")
@@ -53,17 +60,23 @@ def run_interactive(args: argparse.Namespace) -> int:
             if len(names) == 1:
                 print("仅定位到 1 个事件，解析分支中……")
                 entry = next(e for e in entries if e.name == names[0])
+                if args.show_mem:
+                    _print_mem("before summarize")
                 show_single_event_detail(
                     entry,
                     q,
                     reg,
                     max_depth=args.max_depth,
                     only_outcomes=args.only_outcomes,
-                    max_line_len=args.max_line_len,
                 )
+                if args.show_mem:
+                    _print_mem("after summarize")
             else:
-                for name in names:
-                    print(name)
+                if len(names) > 5:
+                    print(f"匹配事件过多：{len(names)} 个（请提供更具体的关键词）")
+                else:
+                    for name in names:
+                        print(name)
     except KeyboardInterrupt:
         print()
     return 0
@@ -98,6 +111,26 @@ def _minimal_events(names: List[str], reg: Registry) -> List[str]:
             if a in name_set:
                 drop.add(a)
     return [n for n in names if n not in drop]
+
+
+def _maybe_start_tracemalloc() -> None:
+    try:
+        import tracemalloc  # type: ignore
+        tracemalloc.start()
+    except Exception:
+        pass
+
+
+def _print_mem(label: str) -> None:
+    info = get_memory_usage()
+    parts = [f"{label}"]
+    if "rss_bytes" in info:
+        parts.append(f"RSS={info['rss_bytes']/1024/1024:.1f}MB")
+    if "tracemalloc_current" in info:
+        parts.append(f"PyCur={info['tracemalloc_current']/1024/1024:.1f}MB")
+    if "tracemalloc_peak" in info:
+        parts.append(f"PyPeak={info['tracemalloc_peak']/1024/1024:.1f}MB")
+    print("[内存] " + ", ".join(parts))
 
 
 def cli_main(argv: Optional[List[str]] = None) -> int:

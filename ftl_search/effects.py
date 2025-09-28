@@ -98,6 +98,17 @@ def extract_effects(event_el) -> List[str]:
                 else:
                     sign = "" if str(amt).startswith("-") else "+"
                     effects.append(f"pursuit {sign}{amt}")
+            elif tag == "boarders":
+                # 入侵者：min/max 或 amount，class 表示类别
+                cls = ch.attrib.get("class") or ch.attrib.get("race") or "?"
+                mn = ch.attrib.get("min")
+                mx = ch.attrib.get("max")
+                amt = ch.attrib.get("amount")
+                if mn or mx:
+                    rng = f"{mn}..{mx}" if mn and mx else (mn or mx or "?")
+                else:
+                    rng = amt or "?"
+                effects.append(f"boarders {cls} {rng}")
             elif tag == "system":
                 nm = ch.attrib.get("name")
                 effects.append(f"system:{nm}")

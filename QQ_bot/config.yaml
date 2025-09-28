@@ -1,0 +1,5 @@
+appid: "102148111"
+secret: "TyTyTyTyTzV1X3Z5c9gDkHoMuS0Y6eDm"
+openapi:
+  base_url: "https://sandbox.api.sgroup.qq.com"  # 沙箱环境，正式环境请更换
+

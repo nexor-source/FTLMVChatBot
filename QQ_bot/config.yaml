@@ -3,3 +3,8 @@ secret: "TyTyTyTyTzV1X3Z5c9gDkHoMuS0Y6eDm"
 openapi:
   base_url: "https://sandbox.api.sgroup.qq.com"  # 沙箱环境，正式环境请更换
 
+# 图片回复设置（可选）
+image_upload:
+  enabled: true
+image_server:
+  base_url: "http://127.0.0.1:5000/images"  # 将 127.0.0.1 改成公网可访问的主机名/IP

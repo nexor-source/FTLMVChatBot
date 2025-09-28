@@ -1,2 +1,6 @@
 # Ignore local data assets
 /data/
+
+# Do not commit generated images
+/outputs/
+*.png

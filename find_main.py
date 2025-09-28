@@ -91,9 +91,119 @@ def _summarize_single_event_to_text(entry, query: str, max_depth: int = 6, only_
     with redirect_stdout(buf):
         show_single_event_detail(entry, query, REG, max_depth=max_depth, only_outcomes=only_outcomes, max_line_len=100)
     out = buf.getvalue().strip()
+    # 去掉首行中的文件路径（如: 匹配事件: NAME (C:\path\file.xml)）
+    if out:
+        lines = out.splitlines()
+        if lines and lines[0].startswith("匹配事件:"):
+            # 简单地按第一次出现的 " (" 切割，保留事件名
+            head = lines[0]
+            cut = head.find(" (")
+            if cut != -1:
+                lines[0] = head[:cut]
+            out = "\n".join(lines)
     if len(out) > max_len:
         return out[: max_len] + "\n…(输出过长，已截断)"
     return out or "(无输出)"
+
+
+def _choose_font():
+    from PIL import ImageFont
+    candidates = [
+        os.environ.get("FONT_PATH"),
+        "C:/Windows/Fonts/msyh.ttc",  # 微软雅黑（Win 常见中文字体）
+        "C:/Windows/Fonts/simhei.ttf",  # 黑体
+        "/System/Library/Fonts/PingFang.ttc",  # macOS 常见中文字体
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "arial.ttf",
+    ]
+    for path in candidates:
+        if not path:
+            continue
+        try:
+            return ImageFont.truetype(path, 18)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def save_text_as_image(text: str, out_dir: Path | None = None) -> Path | None:
+    """将多行文本渲染为图片并保存。返回保存路径，失败返回 None。"""
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        _log.warning("Pillow 未安装，无法生成图片。请安装: pip install Pillow")
+        return None
+
+    out_dir = out_dir or (ROOT / "outputs")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    font = _choose_font()
+    # 预计算行折行与尺寸
+    max_width = 1000
+    pad_x, pad_y = 16, 16
+    line_gap = 8
+
+    # 用于测量文本宽度
+    temp_img = Image.new("RGB", (10, 10), "white")
+    draw = ImageDraw.Draw(temp_img)
+
+    def wrap_line(s: str) -> list[str]:
+        if not s:
+            return [""]
+        out_lines: list[str] = []
+        cur = ""
+        for ch in s:
+            test = cur + ch
+            w = draw.textlength(test, font=font)
+            if w > max_width - pad_x * 2 and cur:
+                out_lines.append(cur)
+                cur = ch
+            else:
+                cur = test
+        if cur or not out_lines:
+            out_lines.append(cur)
+        return out_lines
+
+    src_lines = text.splitlines()
+    lines_wrapped: list[str] = []
+    for ln in src_lines:
+        lines_wrapped.extend(wrap_line(ln.rstrip()))
+
+    # 计算整体宽高
+    widths = [int(draw.textlength(ln, font=font)) for ln in lines_wrapped]
+    max_w = min(max_width, (max(widths) if widths else 0) + pad_x * 2)
+    # 估算行高
+    try:
+        bbox = draw.textbbox((0, 0), "测试Ag", font=font)
+        line_h = bbox[3] - bbox[1]
+    except Exception:
+        line_h = 20
+    height = pad_y * 2 + len(lines_wrapped) * (line_h + line_gap)
+    if height < pad_y * 2 + line_h:
+        height = pad_y * 2 + line_h
+
+    img = Image.new("RGB", (max_w, height), "white")
+    d2 = ImageDraw.Draw(img)
+    y = pad_y
+    for ln in lines_wrapped:
+        d2.text((pad_x, y), ln, font=font, fill=(0, 0, 0))
+        y += line_h + line_gap
+
+    # 生成文件名
+    import time, re
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    # 取文本首行作为名的一部分，去掉特殊字符
+    first = (src_lines[0] if src_lines else "output").strip()
+    first = re.sub(r"[^\w\u4e00-\u9fa5]+", "_", first)[:32] or "output"
+    fp = out_dir / f"find_{ts}_{first}.png"
+    try:
+        img.save(fp)
+        _log.info(f"已保存文本图片: {fp}")
+        return fp
+    except Exception as e:
+        _log.warning(f"保存图片失败: {e}")
+        return None
 
 
 async def handle_find(api: botpy.BotAPI, message: GroupMessage, query: str):
@@ -111,6 +221,12 @@ async def handle_find(api: botpy.BotAPI, message: GroupMessage, query: str):
     if len(names) == 1:
         entry = next(e for e in ENTRIES if e.name == names[0])
         text = _summarize_single_event_to_text(entry, q)
+        # 同步将完整文本保存为本地图像，便于后续切换为图片回复
+        try:
+            full_text = _summarize_single_event_to_text(entry, q, max_len=10_000_000)
+            save_text_as_image(full_text)
+        except Exception:
+            pass
         # 分段发送，避免消息过长
         chunks = []
         cur = []
@@ -168,4 +284,3 @@ def run_bot() -> None:
 
 if __name__ == "__main__":
     run_bot()
-

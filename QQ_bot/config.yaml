@@ -7,4 +7,6 @@ openapi:
 image_upload:
   enabled: true
 image_server:
-  base_url: "http://127.0.0.1:5000/images"  # 将 127.0.0.1 改成公网可访问的主机名/IP
+  base_url: "http://101.42.138.18:5000/images"  # 将 127.0.0.1 改成公网可访问的主机名/IP
+image_cleanup:
+  delay_seconds: 60  # 发送后等待 N 秒再删除本地图片

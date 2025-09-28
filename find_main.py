@@ -12,6 +12,7 @@ import io
 import os
 import re
 import sys
+import asyncio
 import random
 from pathlib import Path
 from contextlib import redirect_stdout
@@ -25,7 +26,7 @@ from ftl_search.registry import index_events, build_registry, EventEntry, Regist
 from ftl_search.summarize import show_single_event_detail
 
 
-# Make console prints UTF-8 (best effort, harmless if unsupported)
+# Ensure console prints UTF-8 (best effort)
 try:
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
     sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
@@ -39,10 +40,8 @@ _log = logging.get_logger()
 
 
 def _locate_data_dir() -> Path:
-    """Locate data directory:
-    1) env FTL_DATA_DIR
-    2) walk parents from this file looking for ./data
-    3) fallback to ./data under current directory
+    """Locate data directory in this order:
+    1) env FTL_DATA_DIR; 2) parents that contain ./data; 3) ./data.
     """
     env = os.environ.get("FTL_DATA_DIR")
     if env:
@@ -83,15 +82,13 @@ def _minimal_events(names: list[str], reg: Registry) -> list[str]:
     name_set = set(names)
     drop = set()
     for m in names:
-        ancestors = reg.event_ancestors.get(m, [])
-        for a in ancestors:
+        for a in reg.event_ancestors.get(m, []):
             if a in name_set:
                 drop.add(a)
     return [n for n in names if n not in drop]
 
 
 def _strip_file_path_from_header(text: str) -> str:
-    """Transform '匹配事件: NAME (C:\path\file.xml)' -> '匹配事件: NAME' on first line only."""
     if not text:
         return text
     lines = text.splitlines()
@@ -197,11 +194,12 @@ def save_text_as_image(text: str, out_dir: Path | None = None) -> Path | None:
         d2.text((pad_x, y), ln, font=font, fill=(0, 0, 0))
         y += line_h + line_gap
 
-    import time
+    import time, unicodedata
     ts = time.strftime("%Y%m%d_%H%M%S")
     first = (src_lines[0] if src_lines else "output").strip()
-    first = re.sub(r"[^\w\u4e00-\u9fa5]+", "_", first)[:32] or "output"
-    fp = out_dir / f"find_{ts}_{first}.png"
+    first_norm = unicodedata.normalize("NFKD", first)
+    first_ascii = re.sub(r"[^A-Za-z0-9_-]+", "_", first_norm)[:48] or "output"
+    fp = out_dir / f"find_{ts}_{first_ascii}.png"
     try:
         img.save(fp)
         _log.info(f"已保存文本图片: {fp}")
@@ -216,25 +214,44 @@ IMAGE_UPLOAD_ENABLED = bool((CFG.get("image_upload") or {}).get("enabled", False
 IMAGE_BASE_URL = None
 if CFG.get("image_server") and CFG["image_server"].get("base_url"):
     IMAGE_BASE_URL = str(CFG["image_server"]["base_url"]).rstrip("/")
+IMAGE_CLEANUP_DELAY = 120
+try:
+    IMAGE_CLEANUP_DELAY = int((CFG.get("image_cleanup") or {}).get("delay_seconds", IMAGE_CLEANUP_DELAY))
+except Exception:
+    pass
 
 
 async def _send_image_if_configured(api: botpy.BotAPI, message: GroupMessage, image_path: Path | None) -> bool:
     if not image_path:
+        _log.info("图片路径为空，跳过发送")
         return False
     if not IMAGE_UPLOAD_ENABLED or not IMAGE_BASE_URL:
+        _log.info("图片发送未启用或缺少 base_url，改为文本回退")
         return False
     try:
-        pic_url = f"{IMAGE_BASE_URL}/{image_path.name}"
+        from urllib.parse import quote
+        pic_url = f"{IMAGE_BASE_URL}/{quote(image_path.name)}"
+        _log.info(f"尝试图片 URL: {pic_url}")
         upload_media = await api.post_group_file(
             group_openid=message.group_openid,
             file_type=1,
             url=pic_url,
         )
         await message.reply(msg_type=7, media=upload_media)
+        _log.info("图片已通过 URL 回复")
         return True
     except Exception as e:
         _log.warning(f"图片富媒体回复失败: {e}")
         return False
+
+
+async def _cleanup_image_later(image_path: Path, delay: int = IMAGE_CLEANUP_DELAY) -> None:
+    try:
+        await asyncio.sleep(delay)
+        image_path.unlink(missing_ok=True)
+        _log.info(f"已删除图片: {image_path}")
+    except Exception:
+        pass
 
 
 async def handle_find(api: botpy.BotAPI, message: GroupMessage, query: str):
@@ -256,6 +273,9 @@ async def handle_find(api: botpy.BotAPI, message: GroupMessage, query: str):
             full_text = _summarize_single_event_to_text(entry, q, max_len=10_000_000)
             img_path = save_text_as_image(full_text)
             sent = await _send_image_if_configured(api, message, img_path)
+            # Always schedule cleanup to avoid lingering files
+            if img_path:
+                asyncio.create_task(_cleanup_image_later(img_path))
             if sent:
                 return
         except Exception:
@@ -294,17 +314,16 @@ class MyClient(botpy.Client):
 
     async def on_group_at_message_create(self, message: GroupMessage):
         content = (message.content or "").strip()
-        low = content.lower()
-        idx = low.find("/find")
-        if idx >= 0:
-            query = content[idx + 5 :].strip()
+        text = content.strip()
+        low = text.lower()
+        if low.startswith("/find"):
+            query = text[5:].strip()
             await handle_find(self.api, message, query)
             return
 
-        # default: simple text reply
-        responses = ["!", "?"]
-        random_response = random.choice(responses)
-        await message.reply(content=content + random_response)
+        # Not a /find command: send usage hint
+        tip = "使用说明：发送 /find 关键词 来检索事件。例如：/find 维修"
+        await message.reply(content=tip)
 
 
 def run_bot() -> None:
@@ -315,4 +334,3 @@ def run_bot() -> None:
 
 if __name__ == "__main__":
     run_bot()
-

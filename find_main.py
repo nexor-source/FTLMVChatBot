@@ -116,6 +116,9 @@ def _summarize_single_event_to_text(
     return out or "(无输出)"
 
 
+# (removed) event-id exact match lookup
+
+
 def _choose_font():
     from PIL import ImageFont
     candidates = [
@@ -254,15 +257,30 @@ def save_text_as_image(text: str, out_dir: Path | None = None) -> Path | None:
         for ln in lines:
             x = base_x
             if first and label:
-                chip_w = int(draw.textlength(label, font=font) + 12)
+                # 为有颜色的标签附加 "-depth"
+                chip_label = label
+                if bg is not None:
+                    chip_label = f"{label}-{depth}"
+                chip_w = int(draw.textlength(chip_label, font=font) + 12)
                 chip_h = line_h
                 if bg:
                     try:
                         d2.rounded_rectangle([x, y, x + chip_w, y + chip_h], radius=6, fill=bg, outline=None)
                     except Exception:
                         d2.rectangle([x, y, x + chip_w, y + chip_h], fill=bg)
-                d2.text((x + 6, y), label, font=font, fill=fg)
+                d2.text((x + 6, y), chip_label, font=font, fill=fg)
                 x += chip_w + 8
+            # “效果/战斗”行：为内容区域绘制同标签色的背景
+            if ln and kind in ("effect", "combat") and palette.get(kind, (None, None))[0] is not None:
+                try:
+                    content_w = int(draw.textlength(ln, font=font)) + 8
+                    content_h = line_h
+                    try:
+                        d2.rounded_rectangle([x, y, x + content_w, y + content_h], radius=6, fill=bg, outline=None)
+                    except Exception:
+                        d2.rectangle([x, y, x + content_w, y + content_h], fill=bg)
+                except Exception:
+                    pass
             d2.text((x, y), ln, font=font, fill=(0, 0, 0))
             y += line_h + line_gap
             first = False

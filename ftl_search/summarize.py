@@ -1,4 +1,4 @@
-"""事件展开：打印事件文本、效果、选择与随机分支。
+﻿"""事件展开：打印事件文本、效果、选择与随机分支。
 
 核心函数:
 - show_single_event_detail: 对单一命中的事件定位文本，并展开分支
@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple, Set
+from typing import List, Optional, Tuple, Set, Dict
+import xml.etree.ElementTree as ET
 
 from .registry import (
     Registry,
@@ -77,7 +78,7 @@ def _handle_event_ref(ev_el, reg: Registry, depth: int, max_depth: int, visited:
     if load in reg.events:
         key = f"E:{load}"
         if key in visited:
-            out_lines.append("  " * (depth + 1) + f"→ 事件 {load} (已访问，跳过循环)")
+            out_lines.append("  " * (depth + 1) + f"→ 事件 {load} (已在当前路径前文展开，避免循环；请参考上文)")
             return
         _, ref_el = reg.events[load]
         visited.add(key)
@@ -88,19 +89,40 @@ def _handle_event_ref(ev_el, reg: Registry, depth: int, max_depth: int, visited:
     if load in reg.event_lists:
         key = f"L:{load}"
         if key in visited:
-            out_lines.append("  " * (depth + 1) + f"→ 事件列表 {load} (已访问，跳过循环)")
+            out_lines.append("  " * (depth + 1) + f"→ 事件列表 {load} (已在当前路径前文展开，避免循环；请参考上文)")
             return
         visited.add(key)
         out_lines.append("  " * (depth + 1) + f"→ 事件列表 {load}：")
         items = reg.event_lists.get(load) or []
         if not items:
             out_lines.append("  " * (depth + 2) + "(空)")
-        for idx, item in enumerate(items, 1):
-            out_lines.append("  " * (depth + 2) + f"随机分支{idx}：")
-            if item.attrib.get("load"):
-                _handle_event_ref(item, reg, depth + 2, max_depth, visited, out_lines)
-            else:
-                _summarize_event(item, reg, depth + 2, max_depth, visited, out_lines)
+        else:
+            groups: Dict[Tuple[str, str], Tuple[object, int]] = {}
+            order: List[Tuple[str, str]] = []
+            for it in items:
+                if it.attrib.get("load"):
+                    key = ("load", it.attrib.get("load") or "")
+                else:
+                    try:
+                        key = ("inline", ET.tostring(it, encoding="utf-8").decode("utf-8", errors="ignore"))
+                    except Exception:
+                        key = ("inline_text", "".join(list(it.itertext())))
+                if key not in groups:
+                    groups[key] = (it, 1)
+                    order.append(key)
+                else:
+                    rep, cnt = groups[key]
+                    groups[key] = (rep, cnt + 1)
+            total = len(items) if len(items) > 0 else 1
+            for idx, key in enumerate(order, 1):
+                rep, cnt = groups[key]
+                p = cnt * 100.0 / total
+                p_str = f"{p:.0f}%" if abs(p - round(p)) < 0.05 else f"{p:.1f}%"
+                out_lines.append("  " * (depth + 2) + f"随机分支{idx} (p={p_str})：")
+                if getattr(rep, 'attrib', {}).get("load"):
+                    _handle_event_ref(rep, reg, depth + 2, max_depth, visited, out_lines)
+                else:
+                    _summarize_event(rep, reg, depth + 3, max_depth, visited, out_lines)
         visited.discard(key)
         return
     out_lines.append("  " * (depth + 1) + f"→ 引用 {load} (未找到为事件或事件列表)")
@@ -146,9 +168,10 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
         if len(nested_events) > 1:
             for idx, ev in enumerate(nested_events, 1):
                 out_lines.append("  " * (depth + 1) + f"→ 随机分支{idx}：")
-                _handle_event_ref(ev, reg, depth, max_depth, visited, out_lines)
+                _handle_event_ref(ev, reg, depth + 1, max_depth, visited, out_lines)
         else:
             for ev in nested_events:
+                # 单个内联事件：内容只比“选择”深一级，避免看起来跨两级
                 _handle_event_ref(ev, reg, depth, max_depth, visited, out_lines)
 
         for evl in nested_lists:
@@ -158,21 +181,65 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
                 items = reg.event_lists.get(load) or []
                 if not items:
                     out_lines.append("  " * (depth + 2) + "(空)")
-                for idx, item in enumerate(items, 1):
-                    out_lines.append("  " * (depth + 2) + f"随机分支{idx}：")
-                    if item.attrib.get("load"):
-                        _handle_event_ref(item, reg, depth + 2, max_depth, visited, out_lines)
-                    else:
-                        _summarize_event(item, reg, depth + 2, max_depth, visited, out_lines)
+                else:
+                    groups: Dict[Tuple[str, str], Tuple[object, int]] = {}
+                    order: List[Tuple[str, str]] = []
+                    for it in items:
+                        if it.attrib.get("load"):
+                            key = ("load", it.attrib.get("load") or "")
+                        else:
+                            try:
+                                key = ("inline", ET.tostring(it, encoding="utf-8").decode("utf-8", errors="ignore"))
+                            except Exception:
+                                key = ("inline_text", "".join(list(it.itertext())))
+                        if key not in groups:
+                            groups[key] = (it, 1)
+                            order.append(key)
+                        else:
+                            rep, cnt = groups[key]
+                            groups[key] = (rep, cnt + 1)
+                    total = len(items) if len(items) > 0 else 1
+                    for idx, key in enumerate(order, 1):
+                        rep, cnt = groups[key]
+                        p = cnt * 100.0 / total
+                        p_str = f"{p:.0f}%" if abs(p - round(p)) < 0.05 else f"{p:.1f}%"
+                        out_lines.append("  " * (depth + 2) + f"随机分支{idx} (p={p_str})：")
+                        if getattr(rep, 'attrib', {}).get("load"):
+                            _handle_event_ref(rep, reg, depth + 2, max_depth, visited, out_lines)
+                        else:
+                            _summarize_event(rep, reg, depth + 3, max_depth, visited, out_lines)
             else:
                 children = [t for t in list(evl) if _strip_namespace(getattr(t, "tag", "")) == "event"]
                 out_lines.append("  " * (depth + 1) + f"→ 事件列表（内联）共 {len(children)} 个：")
-                for idx, item in enumerate(children, 1):
-                    out_lines.append("  " * (depth + 2) + f"随机分支{idx}：")
-                    if item.attrib.get("load"):
-                        _handle_event_ref(item, reg, depth + 2, max_depth, visited, out_lines)
-                    else:
-                        _summarize_event(item, reg, depth + 2, max_depth, visited, out_lines)
+                if not children:
+                    out_lines.append("  " * (depth + 2) + "(空)")
+                else:
+                    groups: Dict[Tuple[str, str], Tuple[object, int]] = {}
+                    order: List[Tuple[str, str]] = []
+                    for it in children:
+                        if it.attrib.get("load"):
+                            key = ("load", it.attrib.get("load") or "")
+                        else:
+                            try:
+                                key = ("inline", ET.tostring(it, encoding="utf-8").decode("utf-8", errors="ignore"))
+                            except Exception:
+                                key = ("inline_text", "".join(list(it.itertext())))
+                        if key not in groups:
+                            groups[key] = (it, 1)
+                            order.append(key)
+                        else:
+                            rep, cnt = groups[key]
+                            groups[key] = (rep, cnt + 1)
+                    total = len(children) if len(children) > 0 else 1
+                    for idx, key in enumerate(order, 1):
+                        rep, cnt = groups[key]
+                        p = cnt * 100.0 / total
+                        p_str = f"{p:.0f}%" if abs(p - round(p)) < 0.05 else f"{p:.1f}%"
+                        out_lines.append("  " * (depth + 2) + f"随机分支{idx} (p={p_str})：")
+                        if getattr(rep, 'attrib', {}).get("load"):
+                            _handle_event_ref(rep, reg, depth + 2, max_depth, visited, out_lines)
+                        else:
+                            _summarize_event(rep, reg, depth + 3, max_depth, visited, out_lines)
 
         for le in load_events:
             name = (le.text or "").strip()
@@ -191,12 +258,33 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
             items = reg.event_lists.get(name) or []
             if not items:
                 out_lines.append("  " * (depth + 2) + "(空)")
-            for idx, item in enumerate(items, 1):
-                out_lines.append("  " * (depth + 2) + f"随机分支{idx}：")
-                if item.attrib.get("load"):
-                    _handle_event_ref(item, reg, depth + 2, max_depth, visited, out_lines)
-                else:
-                    _summarize_event(item, reg, depth + 2, max_depth, visited, out_lines)
+            else:
+                groups: Dict[Tuple[str, str], Tuple[object, int]] = {}
+                order: List[Tuple[str, str]] = []
+                for it in items:
+                    if it.attrib.get("load"):
+                        key = ("load", it.attrib.get("load") or "")
+                    else:
+                        try:
+                            key = ("inline", ET.tostring(it, encoding="utf-8").decode("utf-8", errors="ignore"))
+                        except Exception:
+                            key = ("inline_text", "".join(list(it.itertext())))
+                    if key not in groups:
+                        groups[key] = (it, 1)
+                        order.append(key)
+                    else:
+                        rep, cnt = groups[key]
+                        groups[key] = (rep, cnt + 1)
+                total = len(items) if len(items) > 0 else 1
+                for idx, key in enumerate(order, 1):
+                    rep, cnt = groups[key]
+                    p = cnt * 100.0 / total
+                    p_str = f"{p:.0f}%" if abs(p - round(p)) < 0.05 else f"{p:.1f}%"
+                    out_lines.append("  " * (depth + 2) + f"随机分支{idx} (p={p_str})：")
+                    if getattr(rep, 'attrib', {}).get("load"):
+                        _handle_event_ref(rep, reg, depth + 2, max_depth, visited, out_lines)
+                    else:
+                        _summarize_event(rep, reg, depth + 3, max_depth, visited, out_lines)
 
     # 嵌入战斗：展示败亡结果（优先内联，其次回退全局映射）
     for node in list(event_el):
@@ -312,3 +400,5 @@ def show_single_event_detail(entry, query: str, reg: Registry, max_depth: int = 
 
     for ln in lines:
         print(clip_line(ln, max_line_len))
+
+

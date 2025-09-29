@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """QQ bot entry integrated with /find (ftl_search).
 
 Features
@@ -103,7 +103,7 @@ def _strip_file_path_from_header(text: str) -> str:
 def _summarize_single_event_to_text(
     entry: EventEntry,
     query: str,
-    max_depth: int = 6,
+    max_depth: int = 16,
     only_outcomes: bool = False,
     max_len: int = 1600,
 ) -> str:
@@ -138,7 +138,7 @@ def _choose_font():
 
 
 def save_text_as_image(text: str, out_dir: Path | None = None) -> Path | None:
-    """Render text into a PNG under outputs/ and return path."""
+    """Render styled text (chips + indent guides) into PNG and return path."""
     try:
         from PIL import Image, ImageDraw
     except Exception:
@@ -149,57 +149,131 @@ def save_text_as_image(text: str, out_dir: Path | None = None) -> Path | None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     font = _choose_font()
+    pad_x, pad_y = 18, 18
     max_width = 1000
-    pad_x, pad_y = 16, 16
-    line_gap = 8
+    indent_w = 26
+    line_gap = 6
+    guide_color = (210, 210, 210)
 
+    # helper canvas
     temp_img = Image.new("RGB", (10, 10), "white")
     draw = ImageDraw.Draw(temp_img)
 
-    def wrap_line(s: str) -> list[str]:
-        if not s:
-            return [""]
-        out_lines: list[str] = []
-        cur = ""
-        for ch in s:
-            test = cur + ch
-            w = draw.textlength(test, font=font)
-            if w > max_width - pad_x * 2 and cur:
-                out_lines.append(cur)
-                cur = ch
-            else:
-                cur = test
-        if cur or not out_lines:
-            out_lines.append(cur)
-        return out_lines
+    # palette for chips
+    palette = {
+        'text':   ((240, 240, 240), (110, 110, 110)),
+        'effect': ((234, 255, 234), (34, 120, 34)),
+        'choice': ((255, 242, 204), (180, 120, 0)),
+        'event':  ((243, 229, 245), (140, 30, 150)),
+        'elist':  ((237, 231, 246), (120, 70, 160)),
+        'branch': ((230, 240, 255), (30, 80, 160)),
+        'combat': ((255, 235, 238), (198, 40, 40)),
+        'title':  ((224, 247, 250), (0, 121, 107)),
+        'loc':    ((224, 242, 241), (0, 121, 107)),
+        'normal': (None, (0, 0, 0)),
+    }
 
-    src_lines = text.splitlines()
-    lines_wrapped: list[str] = []
-    for ln in src_lines:
-        lines_wrapped.extend(wrap_line(ln.rstrip()))
+    # classify a single raw line
+    def classify(raw: str):
+        s = raw.rstrip("\r\n")
+        depth = 0
+        while s.startswith("  "):
+            depth += 1
+            s = s[2:]
+        kind = 'normal'; label = None; content = s
+        if s.startswith("文本:"):
+            kind, label, content = 'text', '文本', s[3:].strip()
+        elif s.startswith("效果:"):
+            kind, label, content = 'effect', '效果', s[3:].strip()
+        elif s.startswith("选择:"):
+            kind, label, content = 'choice', '选择', s[3:].strip()
+        elif s.startswith("→ 事件列表"):
+            kind, label, content = 'elist', '列表', s.replace("→ 事件列表", "").strip(" ：:")
+        elif s.startswith("→ 事件"):
+            kind, label, content = 'event', '事件', s.replace("→ 事件", "", 1).strip(" ：:")
+        elif s.startswith("随机分支"):
+            kind, label, content = 'branch', '分支', s
+        elif s.startswith("战斗:"):
+            kind, label, content = 'combat', '战斗', s.split(":", 1)[1].strip()
+        elif s.startswith("匹配事件:"):
+            depth, kind, label, content = 0, 'title', '匹配', s.split(":", 1)[1].strip()
+        elif s.startswith("定位文本:"):
+            depth, kind, label, content = 0, 'loc', '定位', s.split(":", 1)[1].strip()
+        return depth, kind, label, content
 
-    widths = [int(draw.textlength(ln, font=font)) for ln in lines_wrapped]
-    max_w = min(max_width, (max(widths) if widths else 0) + pad_x * 2)
+    # measure line height
     try:
-        bbox = draw.textbbox((0, 0), "测试Ag", font=font)
+        bbox = draw.textbbox((0, 0), 'Ag', font=font)
         line_h = bbox[3] - bbox[1]
     except Exception:
-        line_h = 20
-    height = max(pad_y * 2 + len(lines_wrapped) * (line_h + line_gap), pad_y * 2 + line_h)
+        line_h = 22
 
-    img = Image.new("RGB", (max_w, height), "white")
+    def wrap_to_width(s: str, width_px: int) -> list[str]:
+        if width_px <= 20:
+            return [s]
+        out: list[str] = []
+        cur = ''
+        for ch in s:
+            t = cur + ch
+            if draw.textlength(t, font=font) > width_px and cur:
+                out.append(cur)
+                cur = ch
+            else:
+                cur = t
+        if cur or not out:
+            out.append(cur)
+        return out
+
+    # parse and layout
+    items = []  # (depth, kind, label, [wrapped lines])
+    for raw in text.splitlines():
+        depth, kind, label, content = classify(raw)
+        base_x = pad_x + depth * indent_w
+        chip_w = (draw.textlength(label, font=font) + 12) if label else 0
+        gap = 8 if label else 0
+        avail = max_width - base_x - chip_w - gap - pad_x
+        lines = wrap_to_width(content, int(avail)) if content else ['']
+        items.append((depth, kind, label, lines))
+
+    total_rows = sum(len(it[3]) for it in items)
+    height = pad_y * 2 + total_rows * (line_h + line_gap)
+    img = Image.new('RGB', (max_width, height), 'white')
     d2 = ImageDraw.Draw(img)
-    y = pad_y
-    for ln in lines_wrapped:
-        d2.text((pad_x, y), ln, font=font, fill=(0, 0, 0))
-        y += line_h + line_gap
 
+    y = pad_y
+    for depth, kind, label, lines in items:
+        base_x = pad_x + depth * indent_w
+        # indent guides covering this block height
+        block_h = (line_h + line_gap) * len(lines) - line_gap
+        for i in range(depth):
+            xg = pad_x + i * indent_w + 2
+            d2.line([(xg, y + 2), (xg, y + block_h)], fill=guide_color, width=1)
+
+        bg, fg = palette.get(kind, palette['normal'])
+        first = True
+        for ln in lines:
+            x = base_x
+            if first and label:
+                chip_w = int(draw.textlength(label, font=font) + 12)
+                chip_h = line_h
+                if bg:
+                    try:
+                        d2.rounded_rectangle([x, y, x + chip_w, y + chip_h], radius=6, fill=bg, outline=None)
+                    except Exception:
+                        d2.rectangle([x, y, x + chip_w, y + chip_h], fill=bg)
+                d2.text((x + 6, y), label, font=font, fill=fg)
+                x += chip_w + 8
+            d2.text((x, y), ln, font=font, fill=(0, 0, 0))
+            y += line_h + line_gap
+            first = False
+
+    # save file
     import time, unicodedata
     ts = time.strftime("%Y%m%d_%H%M%S")
-    first = (src_lines[0] if src_lines else "output").strip()
-    first_norm = unicodedata.normalize("NFKD", first)
-    first_ascii = re.sub(r"[^A-Za-z0-9_-]+", "_", first_norm)[:48] or "output"
-    fp = out_dir / f"find_{ts}_{first_ascii}.png"
+    first_line = text.splitlines()[0] if text.splitlines() else 'output'
+    base = unicodedata.normalize('NFKD', first_line)
+    base = re.sub(r'[^A-Za-z0-9_-]+', '_', base)[:48] or 'output'
+    fp = out_dir / f"find_{ts}_{base}.png"
     try:
         img.save(fp)
         _log.info(f"已保存文本图片: {fp}")

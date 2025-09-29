@@ -16,7 +16,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     """解析命令行参数。返回 argparse.Namespace。"""
     ap = argparse.ArgumentParser(description="Search FTL MV event texts and print event names.")
     ap.add_argument("--data", dest="data", default=str(Path("data")), help="Path to data directory (default: ./data)")
-    ap.add_argument("--max-depth", dest="max_depth", type=int, default=10, help="Max recursion depth for branch expansion")
+    ap.add_argument("--max-depth", dest="max_depth", type=int, default=16, help="Max recursion depth for branch expansion")
     ap.add_argument("--only-outcomes", dest="only_outcomes", action="store_true", help="Only show combat outcomes and rewards (hide pre-battle choices/text)")
     ap.add_argument("--show-mem", dest="show_mem", action="store_true", help="显示内存占用 (RSS 或 tracemalloc)")
     return ap.parse_args(argv)

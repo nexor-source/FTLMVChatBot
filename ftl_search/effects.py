@@ -39,13 +39,25 @@ def extract_effects(event_el) -> List[str]:
                 nm = ch.attrib.get("name")
                 effects.append(f"+{tag}:{nm}")
             elif tag == "crewMember":
-                amt = ch.attrib.get("amount", "1")
-                cls = ch.attrib.get("class")
-                effects.append(f"+crew x{amt}{(' '+cls) if cls else ''}")
-            elif tag == "ship":
-                if ch.attrib.get("hostile", "false").lower() == "true":
-                    load = ch.attrib.get("load")
-                    effects.append(f"combat{(':'+load) if load else ''}")
+                amt = ch.attrib.get("amount") or ch.attrib.get("count") or "1"
+                cls = ch.attrib.get("class") or ch.attrib.get("type")
+                # optional skill hints
+                extras = []
+                for k in ("pilot", "combat", "all_skills"):
+                    v = ch.attrib.get(k)
+                    if v:
+                        if k == "all_skills":
+                            extras.append(f"all_skills={v}")
+                        else:
+                            extras.append(f"{k}+{v}")
+                name_txt = (ch.text or "").strip()
+                name_part = f" name={name_txt}" if name_txt else ""
+                extra_part = f" ({', '.join(extras)})" if extras else ""
+                effects.append(f"+crew x{amt}{(' '+cls) if cls else ''}{name_part}{extra_part}")
+            # elif tag == "ship":
+            #     if ch.attrib.get("hostile", "false").lower() == "true":
+            #         load = ch.attrib.get("load")
+            #         effects.append(f"combat{(':'+load) if load else ''}")
             elif tag == "status":
                 typ = ch.attrib.get("type")
                 tgt = ch.attrib.get("target")
@@ -115,6 +127,21 @@ def extract_effects(event_el) -> List[str]:
             elif tag in ("damage", "repair"):
                 amt = ch.attrib.get("amount")
                 effects.append(f"{tag}:{amt}")
+            elif tag == "store":
+                sid = (ch.text or "").strip()
+                if sid:
+                    effects.append(f"store: {sid}")
+                else:
+                    effects.append("store")
+            elif tag == "unlockCustomShip":
+                ship = (ch.text or "").strip() or ch.attrib.get("id") or "?"
+                effects.append(f"unlock: {ship}")
+            elif tag == "removeItem":
+                item = (ch.text or "").strip()
+                if item:
+                    effects.append(f"-item: {item}")
+                else:
+                    effects.append("-item")
             walk(ch)
 
     walk(event_el)

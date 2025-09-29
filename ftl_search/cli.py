@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Optional, List
 
 from .registry import index_events, build_registry, EventEntry, Registry
-from .summarize import show_single_event_detail
+from .summarize import show_single_event_detail, _parse_xml_etree, _iter_named_events_etree, _summarize_event
+from .text_utils import clip_line
 from .mem import get_memory_usage
 
 
@@ -50,6 +51,62 @@ def run_interactive(args: argparse.Namespace) -> int:
                 print()
                 break
             if not q:
+                continue
+            # Try exact event-id match first (case-insensitive)
+            ql = q.lower()
+            entry_by_id = None
+            for e in entries:
+                try:
+                    if e.name == q or e.name.lower() == ql:
+                        entry_by_id = e
+                        break
+                except Exception:
+                    continue
+            if entry_by_id is not None:
+                print("命中事件ID，解析分支中…")
+                if args.show_mem:
+                    _print_mem("before summarize")
+                # 直接完整展开（跳过定位步骤）
+                print(f"匹配事件: {entry_by_id.name} ({entry_by_id.file})")
+                print("定位文本: 未能在事件内部精确定位（可能匹配来自子事件/列表）。")
+                root = _parse_xml_etree(entry_by_id.file)
+                if root is None:
+                    print("[警告] 无法解析该事件文件，跳过详细展开。")
+                else:
+                    # 在同一文件可能出现多处 <event name=.../>（如列表中的占位/引用）。
+                    # 优先选择“有内容”的定义（子节点更多者），避免选到自闭和占位节点。
+                    target_event_el = None
+                    best_children = -1
+                    for name, el in _iter_named_events_etree(root):
+                        if name != entry_by_id.name:
+                            continue
+                        ch_cnt = len(list(el))
+                        if ch_cnt > best_children:
+                            best_children = ch_cnt
+                            target_event_el = el
+                    if target_event_el is None:
+                        print("[警告] 在文件中未找到目标事件。")
+                    else:
+                        lines: List[str] = []
+                        _summarize_event(target_event_el, reg, depth=0, max_depth=args.max_depth, visited=set(), out_lines=lines)
+                        if args.only_outcomes:
+                            keys = ("战斗", "投降", "摧毁", "船员全灭", "逃跑", "敌舰逃走")
+                            start_idx = None
+                            original_lines = list(lines)
+                            for i2, ln in enumerate(lines):
+                                if any(k in ln for k in keys):
+                                    start_idx = i2
+                                    break
+                            if start_idx is not None:
+                                lines = lines[start_idx:]
+                            else:
+                                lines = [ln for ln in lines if any(k in ln for k in keys)]
+                            if not lines:
+                                lines = original_lines
+                        for ln in lines:
+                            print(clip_line(ln, 80))
+                if args.show_mem:
+                    _print_mem("after summarize")
                 continue
             names = _search(entries, q)
             # 仅保留“最小事件”：去掉任何作为其它命中事件祖先的事件

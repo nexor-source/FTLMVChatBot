@@ -55,7 +55,9 @@ def _locate_data_dir() -> Path:
 
 DATA_DIR = _locate_data_dir()
 print(f"索引路径: {DATA_DIR} ...", flush=True)
-print(f"索引路径: {DATA_DIR} ...", flush=True)
+
+FIND_USAGE = "用法: /find 关键词"
+DEFAULT_HELP = "目前仅支持 /find 命令"
 
 
 
@@ -65,11 +67,11 @@ def _strip_file_path_from_header(text: str) -> str:
     lines = text.splitlines()
     if not lines:
         return text
-    # Try to drop "(path)" in first line if present
+    # Try to drop trailing "(path)" on the first line if present
+    m = re.match(r"^(.*?)(?:\s*\([^()]+\))\s*$", lines[0])
     if m:
-        lines[0] = m.group(1)
-        return "\n".join(lines)
-    return text
+        lines[0] = m.group(1).rstrip()
+    return "\n".join(lines)
 
 
 def _choose_font():
@@ -199,13 +201,13 @@ async def _cleanup_image_later(image_path: Path, delay: int = IMAGE_CLEANUP_DELA
 async def handle_find_new(api: botpy.BotAPI, message: GroupMessage, query: str):
     q = (query or "").strip()
     if not q:
-        await message.reply(content="用法: /find 关键词")
+        await message.reply(content=FIND_USAGE)
         return
 
     res = search_once(q, DATA_DIR, max_depth=16, only_outcomes=False)
     kind = res.get("kind")
     if kind == "empty_query":
-        await message.reply(content="用法: /find 关键词")
+        await message.reply(content=FIND_USAGE)
         return
     if kind == "not_found":
         return
@@ -248,7 +250,8 @@ class MyClient(botpy.Client):
             query = text[5:].strip()
             await handle_find_new(self.api, message, query)
             return
-        await message.reply(content=tip)
+        if DEFAULT_HELP:
+            await message.reply(content=DEFAULT_HELP)
 
 
 def run_bot() -> None:

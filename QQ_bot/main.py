@@ -1,7 +1,6 @@
 """Minimal QQ bot that replies with text only."""
 # -*- coding: utf-8 -*-
 import os
-import random
 
 import botpy
 from botpy import logging
@@ -18,11 +17,7 @@ class MyClient(botpy.Client):
         _log.info(f'robot "{self.robot.name}" is ready!')
 
     async def on_group_at_message_create(self, message: GroupMessage):
-        content = message.content.strip()
-        # 随机在文本后追加感叹号或问号进行回复
-        responses = ["!", "?"]
-        random_response = random.choice(responses)
-        await message.reply(content=content + random_response)
+        await message.reply(content=message.content.strip())
 
 
 if __name__ == "__main__":

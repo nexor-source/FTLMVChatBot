@@ -54,10 +54,6 @@ def extract_effects(event_el) -> List[str]:
                 name_part = f" name={name_txt}" if name_txt else ""
                 extra_part = f" ({', '.join(extras)})" if extras else ""
                 effects.append(f"+crew x{amt}{(' '+cls) if cls else ''}{name_part}{extra_part}")
-            # elif tag == "ship":
-            #     if ch.attrib.get("hostile", "false").lower() == "true":
-            #         load = ch.attrib.get("load")
-            #         effects.append(f"combat{(':'+load) if load else ''}")
             elif tag == "status":
                 typ = ch.attrib.get("type")
                 tgt = ch.attrib.get("target")

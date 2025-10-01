@@ -1,0 +1,12 @@
+﻿# -*- coding: utf-8 -*-
+"""QQ bot entry for /find (FTL MV).
+
+Simplified per requested logic:
+- Exact event-id match (case-insensitive) short-circuits and expands only that event.
+- Text search scans each <event> node's own text only:
+  - Skip nested <event>, <loadEvent>, <loadEventList> entirely.
+  - Include text from <text load="..."> (textList) only.
+- If a match lies in an anonymous event, map to the nearest named ancestor event.
+"""
+from __future__ import annotations
+

@@ -1,4 +1,4 @@
-"""命令行入口与交互循环。"""
+﻿"""命令行入口与交互循环。"""
 
 from __future__ import annotations
 
@@ -268,3 +268,136 @@ def _print_mem(label: str) -> None:
 def cli_main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     return run_interactive(args)
+
+
+# Library-style single-shot search entry to keep QQ bot consistent with CLI.
+def search_once(
+    query: str,
+    data_dir: Path,
+    *,
+    max_depth: int = 16,
+    only_outcomes: bool = False,
+) -> dict:
+    """Run one search using the same logic as the CLI interactive flow.
+
+    Returns a dict:
+    - {kind: 'expand', name: str, text: str}
+    - {kind: 'names', names: List[str]}
+    - {kind: 'not_found'}
+    - {kind: 'empty_query'}
+    """
+    q = (query or "").strip()
+    if not q:
+        return {"kind": "empty_query"}
+
+    reg = build_registry(data_dir)
+    entries = index_events(data_dir, reg, max_expand_depth=max_depth)
+    nodes = index_event_nodes(data_dir, reg)
+
+    # Try exact event-id match (case-insensitive)
+    ql = q.lower()
+    entry_by_id = None
+    for e in entries:
+        try:
+            if e.name == q or e.name.lower() == ql:
+                entry_by_id = e
+                break
+        except Exception:
+            continue
+    if entry_by_id is not None:
+        # Summarize directly (skip locate step)
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print(f"匹配事件: {entry_by_id.name} ({entry_by_id.file})")
+            print("定位文本: 未能在事件内部精确定位（可能匹配来自子事件/列表）")
+            root = _parse_xml_etree(entry_by_id.file)
+            if root is not None:
+                target_event_el = None
+                best_children = -1
+                for name, el in _iter_named_events_etree(root):
+                    if name != entry_by_id.name:
+                        continue
+                    ch_cnt = len(list(el))
+                    if ch_cnt > best_children:
+                        best_children = ch_cnt
+                        target_event_el = el
+                if target_event_el is not None:
+                    lines: List[str] = []
+                    _summarize_event(target_event_el, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines)
+                    if only_outcomes:
+                        keys = ("战斗", "投降", "摧毁", "船员全灭", "逃跑", "敌舰逃走")
+                        start_idx = None
+                        original_lines = list(lines)
+                        for i2, ln in enumerate(lines):
+                            if any(k in ln for k in keys):
+                                start_idx = i2
+                                break
+                        if start_idx is not None:
+                            lines = lines[start_idx:]
+                        else:
+                            lines = [ln for ln in lines if any(k in ln for k in keys)]
+                        if not lines:
+                            lines = original_lines
+                    for ln in lines:
+                        print(clip_line(ln, 100))
+        return {"kind": "expand", "name": entry_by_id.name, "text": buf.getvalue().strip()}
+
+    # Locate by node search first (same as CLI)
+    hit_nodes = _search_nodes(nodes, q)
+    hit_nodes = _minimal_event_nodes(hit_nodes)
+    # If multiple nodes and have named ones, list those names
+    if len(hit_nodes) > 1:
+        names = []
+        for n in hit_nodes:
+            if getattr(n, 'name', None):
+                names.append(n.name)
+        if names:
+            return {"kind": "names", "names": names}
+    # Single node hit: summarize that node directly (handles anonymous events)
+    if len(hit_nodes) == 1:
+        n = hit_nodes[0]
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            lines: List[str] = []
+            _summarize_event(n.el, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines)
+            if only_outcomes:
+                keys = ("战斗", "投降", "摧毁", "船员全灭", "逃跑", "敌舰逃走")
+                start_idx = None
+                original_lines = list(lines)
+                for i2, ln in enumerate(lines):
+                    if any(k in ln for k in keys):
+                        start_idx = i2
+                        break
+                if start_idx is not None:
+                    lines = lines[start_idx:]
+                else:
+                    lines = [ln for ln in lines if any(k in ln for k in keys)]
+                if not lines:
+                    lines = original_lines
+            header = (f"匹配事件: {n.name} ({n.file})" if getattr(n, 'name', None) else f"匹配匿名事件 ({n.file})")
+            print(header)
+            for ln in lines:
+                print(clip_line(ln, 100))
+        return {"kind": "expand", "name": getattr(n, 'name', None) or "(anonymous)", "text": buf.getvalue().strip()}
+    # No useful node hits -> derive names; if still empty, fall back to expanded entry search
+    names = [n.name for n in hit_nodes if getattr(n, 'name', None)]
+    if not names:
+        names = _minimal_events(_search(entries, q), reg)
+        if not names:
+            return {"kind": "not_found"}
+    if len(names) == 1:
+        entry = next(e for e in entries if e.name == names[0])
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            show_single_event_detail(entry, q, reg, max_depth=max_depth, only_outcomes=only_outcomes)
+        return {"kind": "expand", "name": entry.name, "text": buf.getvalue().strip()}
+    else:
+        return {"kind": "names", "names": names}

@@ -15,7 +15,7 @@ import html
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple, Dict, Any
+from typing import Iterable, List, Optional, Tuple, Dict, Any, Set
 
 import xml.etree.ElementTree as ET
 
@@ -26,6 +26,17 @@ class EventEntry:
     file: Path
     text: str
     text_nows: str
+
+
+@dataclass
+class EventNodeEntry:
+    uid: str
+    name: Optional[str]
+    file: Path
+    el: Any
+    text: str
+    text_nows: str
+    ancestors: List[str]
 
 
 @dataclass
@@ -119,6 +130,185 @@ def _fallback_parse_events_text(path: Path) -> Iterable[Tuple[str, str]]:
         out.append((name, body))
     return out
 
+
+def index_events_expanded(
+    data_dir: Path,
+    reg: Optional["Registry"] = None,
+    *,
+    max_expand_depth: int = 8,
+) -> List[EventEntry]:
+    """增强索引：为具名事件递归合并通过 load 引用到的文本。
+
+    - 合并 event / eventList / textList 的文本（限深、去重、环检测）。
+    - 返回值与原 index_events 相同类型，兼容现有检索逻辑。
+    - 若未提供 reg，将内部构建一次 Registry。
+    """
+
+    if reg is None:
+        reg = build_registry(data_dir)
+
+    expand_cache: Dict[str, str] = {}
+
+    def _text_for_textlist(name: str) -> str:
+        vals = reg.text_lists.get(name) if hasattr(reg, 'text_lists') else None
+        if not vals:
+            return ""
+        try:
+            return " ".join([v for v in vals if v])
+        except Exception:
+            return ""
+
+    def _expand_event_by_name(name: str, depth: int, visited: Set[str]) -> str:
+        key = f"E:{name}"
+        if depth >= max_expand_depth or key in visited:
+            return ""
+        if key in expand_cache:
+            return expand_cache[key]
+        pair = reg.events.get(name)
+        if not pair:
+            return ""
+        _, el = pair
+        visited.add(key)
+        try:
+            txt = _gather_subtree_text(el)
+            more = _expand_loads_in_tree(el, depth + 1, visited)
+            out = (txt + " " + more).strip()
+            expand_cache[key] = out
+            return out
+        finally:
+            visited.discard(key)
+
+    def _expand_eventlist_by_name(name: str, depth: int, visited: Set[str]) -> str:
+        key = f"L:{name}"
+        if depth >= max_expand_depth or key in visited:
+            return ""
+        if key in expand_cache:
+            return expand_cache[key]
+        items = reg.event_lists.get(name)
+        if not items:
+            return ""
+        visited.add(key)
+        try:
+            parts: List[str] = []
+            for it in items:
+                try:
+                    parts.append(_gather_subtree_text(it))
+                    parts.append(_expand_loads_in_tree(it, depth + 1, visited))
+                except Exception:
+                    continue
+            out = re.sub(r"\s+", " ", " ".join(p for p in parts if p).strip())
+            expand_cache[key] = out
+            return out
+        finally:
+            visited.discard(key)
+
+    def _expand_loads_in_tree(root_el, depth: int, visited: Set[str]) -> str:
+        if depth >= max_expand_depth:
+            return ""
+        parts: List[str] = []
+        seen_refs: Set[str] = set()
+        for node in getattr(root_el, 'iter', lambda: [])():
+            try:
+                tag = _strip_namespace(getattr(node, "tag", ""))
+                tag_lower = tag.lower()
+                # textList via <text load="...">
+                if tag_lower == "text" and 'load' in getattr(node, 'attrib', {}):
+                    tname = node.attrib.get('load') or ""
+                    if tname:
+                        key = f"T:{tname}"
+                        if key not in seen_refs:
+                            seen_refs.add(key)
+                            parts.append(_text_for_textlist(tname))
+                    continue
+
+                # generic load attribute
+                if 'load' in getattr(node, 'attrib', {}):
+                    lname = node.attrib.get('load') or ""
+                    if not lname or lname == 'COMBAT_CHECK':
+                        continue
+                    if lname in reg.events:
+                        key = f"E:{lname}"
+                        if key not in seen_refs:
+                            seen_refs.add(key)
+                            parts.append(_expand_event_by_name(lname, depth + 1, visited))
+                        continue
+                    if lname in reg.event_lists:
+                        key = f"L:{lname}"
+                        if key not in seen_refs:
+                            seen_refs.add(key)
+                            parts.append(_expand_eventlist_by_name(lname, depth + 1, visited))
+                        continue
+
+                # loadEvent / loadEventList nodes
+                if tag_lower == 'loadevent':
+                    name_txt = (node.text or "").strip()
+                    if name_txt and name_txt != 'COMBAT_CHECK':
+                        if name_txt in reg.events:
+                            key = f"E:{name_txt}"
+                            if key not in seen_refs:
+                                seen_refs.add(key)
+                                parts.append(_expand_event_by_name(name_txt, depth + 1, visited))
+                        elif name_txt in reg.event_lists:
+                            key = f"L:{name_txt}"
+                            if key not in seen_refs:
+                                seen_refs.add(key)
+                                parts.append(_expand_eventlist_by_name(name_txt, depth + 1, visited))
+                    continue
+                if tag_lower == 'loadeventlist':
+                    name_txt = (node.text or "").strip()
+                    if name_txt:
+                        key = f"L:{name_txt}"
+                        if key not in seen_refs:
+                            seen_refs.add(key)
+                            parts.append(_expand_eventlist_by_name(name_txt, depth + 1, visited))
+                    continue
+            except Exception:
+                continue
+        return re.sub(r"\s+", " ", " ".join(p for p in parts if p).strip())
+
+    # 逐具名事件构建条目
+    entries: List[EventEntry] = []
+    for name, (fp, el) in reg.events.items():
+        try:
+            base = _gather_subtree_text(el)
+            extra = _expand_loads_in_tree(el, 0, set())
+            text = (base + " " + extra).strip()
+            if text:
+                entries.append(
+                    EventEntry(
+                        name=name,
+                        file=fp,
+                        text=text,
+                        text_nows=re.sub(r"\s+", "", text),
+                    )
+                )
+        except Exception:
+            continue
+
+    # 兜底：用正则补充解析失败但包含具名 <event> 的文件
+    known = set(reg.events.keys())
+    xml_files = [
+        f
+        for f in data_dir.rglob("*")
+        if f.is_file() and (f.suffix.lower() == ".xml" or str(f).lower().endswith(".xml.append"))
+    ]
+    for fp in xml_files:
+        try:
+            for nm, txt in _fallback_parse_events_text(fp):
+                if not txt or nm in known:
+                    continue
+                entries.append(
+                    EventEntry(
+                        name=nm,
+                        file=fp,
+                        text=txt,
+                        text_nows=re.sub(r"\s+", "", txt),
+                    )
+                )
+        except Exception:
+            continue
+
+    return entries
 
 def index_events(data_dir: Path) -> List[EventEntry]:
     """扫描 data 目录，构建可搜索的事件条目列表（仅具名 <event>）。
@@ -267,3 +457,95 @@ def build_registry(data_dir: Path) -> Registry:
         ship_defs=ship_defs,
         event_ancestors=event_ancestors,
     )
+
+
+def index_event_nodes(data_dir: Path, reg: Optional["Registry"] = None) -> List[EventNodeEntry]:
+    """索引所有 <event> 节点（含匿名），并生成可用于“最小事件”检索的条目。
+
+    - 文本来源：节点子树的可见文本 + 子树中的 `<text load="...">` 对应 textList 内容。
+    - 祖先关系：按 XML 结构的父子 <event> 链记录（不经由 load 关系）。
+    - 不展开 event/eventList 的 load；这些在展示阶段再展开。
+    """
+    if reg is None:
+        reg = build_registry(data_dir)
+
+    def _text_for_textlist(name: str) -> str:
+        vals = reg.text_lists.get(name) if hasattr(reg, 'text_lists') else None
+        if not vals:
+            return ""
+        try:
+            return " ".join([v for v in vals if v])
+        except Exception:
+            return ""
+
+    def _gather_textlist_in_subtree(el) -> str:
+        parts: List[str] = []
+        for node in getattr(el, 'iter', lambda: [])():
+            try:
+                tag = _strip_namespace(getattr(node, "tag", ""))
+                if tag == 'text' and 'load' in getattr(node, 'attrib', {}):
+                    tname = node.attrib.get('load') or ""
+                    if tname:
+                        s = _text_for_textlist(tname)
+                        if s:
+                            parts.append(s)
+            except Exception:
+                continue
+        return re.sub(r"\s+", " ", " ".join(p for p in parts if p).strip())
+
+    entries: List[EventNodeEntry] = []
+    uid_counter = 0
+
+    xml_files = [
+        f
+        for f in data_dir.rglob("*")
+        if f.is_file() and (f.suffix.lower() == ".xml" or str(f).lower().endswith(".xml.append"))
+    ]
+
+    for fp in xml_files:
+        root = _parse_xml_etree(fp)
+        if root is None:
+            continue
+
+        stack: List[str] = []  # ancestor event uids
+
+        def visit(node):
+            nonlocal uid_counter
+            try:
+                tag = _strip_namespace(getattr(node, "tag", ""))
+            except Exception:
+                tag = ""
+            is_event = tag == 'event'
+            cur_uid: Optional[str] = None
+            if is_event:
+                uid_counter += 1
+                cur_uid = f"EN{uid_counter}"
+                try:
+                    base = _gather_subtree_text(node)
+                except Exception:
+                    base = ""
+                extra = _gather_textlist_in_subtree(node)
+                text = re.sub(r"\s+", " ", (base + " " + extra).strip())
+                entries.append(
+                    EventNodeEntry(
+                        uid=cur_uid,
+                        name=node.attrib.get('name'),
+                        file=fp,
+                        el=node,
+                        text=text,
+                        text_nows=re.sub(r"\s+", "", text),
+                        ancestors=list(stack),
+                    )
+                )
+                stack.append(cur_uid)
+            for ch in list(node):
+                visit(ch)
+            if is_event:
+                try:
+                    stack.pop()
+                except Exception:
+                    pass
+
+        visit(root)
+
+    return entries

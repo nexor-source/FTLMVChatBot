@@ -5,9 +5,9 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Set
 
-from .registry import index_events, build_registry, EventEntry, Registry
+from .registry import index_events_expanded as index_events, index_event_nodes, build_registry, EventEntry, Registry, EventNodeEntry
 from .summarize import show_single_event_detail, _parse_xml_etree, _iter_named_events_etree, _summarize_event
 from .text_utils import clip_line
 from .mem import get_memory_usage
@@ -37,9 +37,10 @@ def run_interactive(args: argparse.Namespace) -> int:
     reg = build_registry(data_dir)
     if args.show_mem:
         _print_mem("after build_registry")
-    entries = index_events(data_dir)
+    entries = index_events(data_dir, reg, max_expand_depth=args.max_depth)
+    nodes = index_event_nodes(data_dir, reg)
     if args.show_mem:
-        _print_mem("after index_events")
+        _print_mem("after index_events + index_event_nodes")
     print(f"索引完成: 事件共 {len(entries)} 条（仅统计具名 <event>）。")
 
     print("输入中文检索子串（Ctrl+C 或 Ctrl+D 退出）：")
@@ -108,9 +109,52 @@ def run_interactive(args: argparse.Namespace) -> int:
                 if args.show_mem:
                     _print_mem("after summarize")
                 continue
-            names = _search(entries, q)
+            hit_nodes = _search_nodes(nodes, q)
             # 仅保留“最小事件”：去掉任何作为其它命中事件祖先的事件
-            names = _minimal_events(names, reg)
+            hit_nodes = _minimal_event_nodes(hit_nodes)
+            # 若仅命中一个事件节点（含匿名），直接从该最小节点展开
+            if len(hit_nodes) == 1:
+                n = hit_nodes[0]
+                print("仅定位到 1 个事件，解析分支中…")
+                if args.show_mem:
+                    _print_mem("before summarize")
+                lines: List[str] = []
+                _summarize_event(n.el, reg, depth=0, max_depth=args.max_depth, visited=set(), out_lines=lines)
+                if args.only_outcomes:
+                    keys = ("战斗", "投降", "摧毁", "船员全灭", "逃跑", "敌舰逃走")
+                    start_idx = None
+                    original_lines = list(lines)
+                    for i2, ln in enumerate(lines):
+                        if any(k in ln for k in keys):
+                            start_idx = i2
+                            break
+                    if start_idx is not None:
+                        lines = lines[start_idx:]
+                    else:
+                        lines = [ln for ln in lines if any(k in ln for k in keys)]
+                    if not lines:
+                        lines = original_lines
+                header = (f"匹配事件: {n.name} ({n.file})" if n.name else f"匹配匿名事件 ({n.file})")
+                print(header)
+                for ln in lines:
+                    print(clip_line(ln, 80))
+                if args.show_mem:
+                    _print_mem("after summarize")
+                continue
+            # 多个事件节点命中：直接列出（匿名显示文件+摘要），并提示收窄关键词
+            if len(hit_nodes) > 1:
+                if len(hit_nodes) > 5:
+                    print(f"匹配事件过多：{len(hit_nodes)} 个（请提供更具体的关键词）")
+                else:
+                    for n in hit_nodes:
+                        if getattr(n, 'name', None):
+                            print(n.name)
+                        else:
+                            snip = clip_line(n.text, 40)
+                            print(f"{n.file} | {snip}")
+                continue
+            # 兼容旧逻辑：无命中或仅命中具名列表
+            names = [n.name for n in hit_nodes if getattr(n, 'name', None)]
             if not names:
                 print("无匹配事件。")
                 continue
@@ -168,6 +212,37 @@ def _minimal_events(names: List[str], reg: Registry) -> List[str]:
             if a in name_set:
                 drop.add(a)
     return [n for n in names if n not in drop]
+
+
+def _search_nodes(nodes: List[EventNodeEntry], query: str) -> List[EventNodeEntry]:
+    q = query.strip()
+    if not q:
+        return []
+    q_nows = "".join(q.split())
+    results: List[EventNodeEntry] = []
+    seen: Set[str] = set()
+    for n in nodes:
+        try:
+            if q in n.text or (q_nows and q_nows in n.text_nows):
+                if n.uid not in seen:
+                    seen.add(n.uid)
+                    results.append(n)
+        except Exception:
+            continue
+    return results
+
+
+def _minimal_event_nodes(nodes: List[EventNodeEntry]) -> List[EventNodeEntry]:
+    if not nodes:
+        return []
+    by_uid = {n.uid: n for n in nodes}
+    uids = set(by_uid.keys())
+    drop: Set[str] = set()
+    for n in nodes:
+        for a in getattr(n, 'ancestors', []) or []:
+            if a in uids:
+                drop.add(a)
+    return [n for n in nodes if n.uid not in drop]
 
 
 def _maybe_start_tracemalloc() -> None:

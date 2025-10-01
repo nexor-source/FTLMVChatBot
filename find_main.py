@@ -71,6 +71,16 @@ def _search(entries: list[EventEntry], query: str) -> list[str]:
     seen = set()
     results: list[str] = []
     for e in entries:
+        # Prioritize exact event-id match (case-insensitive), like CLI
+        try:
+            if e.name == q or e.name.lower() == q.lower():
+                if e.name not in seen:
+                    seen.add(e.name)
+                    results.append(e.name)
+                continue
+        except Exception:
+            pass
+        # Substring match against event text
         if q in e.text or (q_nows and q_nows in e.text_nows):
             if e.name not in seen:
                 seen.add(e.name)

@@ -348,11 +348,20 @@ def show_single_event_detail(entry, query: str, reg: Registry, max_depth: int = 
         print("[警告] 无法解析该事件文件，跳过详细展开。")
         return
 
+    # Prefer the richest definition when multiple <event name=...> exist
+    # (e.g., event-list placeholder items vs the full event body).
     target_event_el = None
+    best_children = -1
     for name, el in _iter_named_events_etree(root):
-        if name == entry.name:
+        if name != entry.name:
+            continue
+        try:
+            ch_cnt = len(list(el))
+        except Exception:
+            ch_cnt = 0
+        if ch_cnt > best_children:
+            best_children = ch_cnt
             target_event_el = el
-            break
     if target_event_el is None:
         print("[警告] 在文件中未找到目标事件。")
         return

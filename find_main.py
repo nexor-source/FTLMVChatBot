@@ -66,8 +66,11 @@ def _strip_file_path_from_header(text: str) -> str:
     if not lines:
         return text
     # Try to drop "(path)" in first line if present
+    header = lines[0]
+    m = re.match(r"^\(([^)]+)\)\s*(.*)$", header)
     if m:
-        lines[0] = m.group(1)
+        remainder = m.group(2).strip()
+        lines[0] = remainder or m.group(1)
         return "\n".join(lines)
     return text
 
@@ -93,6 +96,7 @@ def _choose_font():
 
 
 def save_text_as_image(text: str, out_dir: Path | None = None) -> Path | None:
+    """Render styled text (chips + indent guides) into PNG and return path."""
     try:
         from PIL import Image, ImageDraw
     except Exception:
@@ -103,59 +107,146 @@ def save_text_as_image(text: str, out_dir: Path | None = None) -> Path | None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     font = _choose_font()
-    pad_x, pad_y = 16, 16
+    pad_x, pad_y = 18, 18
     max_width = 1000
+    indent_w = 26
     line_gap = 6
+    guide_color = (210, 210, 210)
 
     temp_img = Image.new("RGB", (10, 10), "white")
     draw = ImageDraw.Draw(temp_img)
     try:
-        bbox = draw.textbbox((0, 0), 'Ag', font=font)
+        bbox = draw.textbbox((0, 0), "Ag", font=font)
         line_h = bbox[3] - bbox[1]
     except Exception:
         line_h = 22
 
-    def wrap_line(s: str, width_px: int) -> List[str]:
+    palette = {
+        "text":   ((240, 240, 240), (110, 110, 110)),
+        "effect": ((234, 255, 234), (34, 120, 34)),
+        "choice": ((255, 242, 204), (180, 120, 0)),
+        "event":  ((243, 229, 245), (140, 30, 150)),
+        "elist":  ((237, 231, 246), (120, 70, 160)),
+        "branch": ((230, 240, 255), (30, 80, 160)),
+        "combat": ((255, 235, 238), (198, 40, 40)),
+        "title":  ((224, 247, 250), (0, 121, 107)),
+        "loc":    ((224, 242, 241), (0, 121, 107)),
+        "normal": (None, (0, 0, 0)),
+    }
+
+    def classify(raw: str) -> tuple[int, str, str | None, str]:
+        s = raw.rstrip("\r\n")
+
+        depth = 0
+        while s.startswith("  "):
+            depth += 1
+            s = s[2:]
+        kind = "normal"
+        label: str | None = None
+        content = s
+        if s.startswith("文本:"):
+            kind, label, content = "text", "文本", s[3:].strip()
+        elif s.startswith("效果:"):
+            kind, label, content = "effect", "效果", s[3:].strip()
+        elif s.startswith("选择:"):
+            kind, label, content = "choice", "选择", s[3:].strip()
+        elif s.startswith("→ 事件列表"):
+            kind, label, content = "elist", "列表", s.replace("→ 事件列表", "", 1).strip(" ：:")
+        elif s.startswith("→ 事件"):
+            kind, label, content = "event", "事件", s.replace("→ 事件", "", 1).strip(" ：:")
+        elif s.startswith("随机分支"):
+            kind, label, content = "branch", "分支", s
+        elif s.startswith("战斗:"):
+            kind, label, content = "combat", "战斗", s.split(":", 1)[1].strip()
+        elif s.startswith("匹配事件:"):
+            depth, kind, label, content = 0, "title", "匹配", s.split(":", 1)[1].strip()
+        elif s.startswith("定位文本:"):
+            depth, kind, label, content = 0, "loc", "定位", s.split(":", 1)[1].strip()
+        return depth, kind, label, content
+
+    def wrap_to_width(s: str, width_px: int) -> list[str]:
         if width_px <= 20:
             return [s]
-        out: List[str] = []
-        cur = ''
+        out: list[str] = []
+        cur = ""
         for ch in s:
-            t = cur + ch
-            if draw.textlength(t, font=font) > width_px and cur:
+            candidate = cur + ch
+            if draw.textlength(candidate, font=font) > width_px and cur:
                 out.append(cur)
                 cur = ch
             else:
-                cur = t
+                cur = candidate
         if cur or not out:
             out.append(cur)
         return out
 
-    # wrap all lines
-    wrapped: List[str] = []
+    items: list[tuple[int, str, str | None, list[str]]] = []
     for raw in text.splitlines():
-        for ln in wrap_line(raw.rstrip("\r\n"), max_width - pad_x * 2):
-            wrapped.append(ln)
+        depth, kind, label, content = classify(raw)
+        base_x = pad_x + depth * indent_w
+        chip_w = int(draw.textlength(label, font=font) + 12) if label else 0
+        gap = 8 if label else 0
+        avail = max_width - base_x - chip_w - gap - pad_x
+        if avail <= 40:
+            avail = max_width - pad_x * 2
+        lines = wrap_to_width(content, int(avail)) if content else [""]
+        items.append((depth, kind, label, lines))
 
-    height = pad_y * 2 + len(wrapped) * (line_h + line_gap)
-    img = Image.new('RGB', (max_width, height), 'white')
-    d2 = ImageDraw.Draw(img)
+    total_rows = sum(len(block) for _, _, _, block in items)
+    height = pad_y * 2 + total_rows * (line_h + line_gap)
+    img = Image.new("RGB", (max_width, height), "white")
+    painter = ImageDraw.Draw(img)
+
     y = pad_y
-    for ln in wrapped:
-        d2.text((pad_x, y), ln, font=font, fill=(0, 0, 0))
-        y += line_h + line_gap
+    for depth, kind, label, lines in items:
+        base_x = pad_x + depth * indent_w
+        block_h = (line_h + line_gap) * len(lines) - line_gap
+        for i in range(depth):
+            xg = pad_x + i * indent_w + 2
+            painter.line([(xg, y + 2), (xg, y + block_h)], fill=guide_color, width=1)
+
+        bg, fg = palette.get(kind, palette["normal"])
+        first_line = True
+        for ln in lines:
+            x = base_x
+            if first_line and label:
+                chip_label = label
+                if bg is not None:
+                    chip_label = f"{label}-{depth}"
+                chip_w = int(draw.textlength(chip_label, font=font) + 12)
+                chip_h = line_h
+                if bg:
+                    try:
+                        painter.rounded_rectangle([x, y, x + chip_w, y + chip_h], radius=6, fill=bg, outline=None)
+                    except Exception:
+                        painter.rectangle([x, y, x + chip_w, y + chip_h], fill=bg)
+                painter.text((x + 6, y), chip_label, font=font, fill=fg)
+                x += chip_w + 8
+            if ln and kind in {"effect", "combat"} and bg is not None:
+                try:
+                    content_w = int(draw.textlength(ln, font=font)) + 8
+                    content_h = line_h
+                    try:
+                        painter.rounded_rectangle([x, y, x + content_w, y + content_h], radius=6, fill=bg, outline=None)
+                    except Exception:
+                        painter.rectangle([x, y, x + content_w, y + content_h], fill=bg)
+                except Exception:
+                    pass
+            painter.text((x, y), ln, font=font, fill=(0, 0, 0))
+            y += line_h + line_gap
+            first_line = False
 
     ts = time.strftime("%Y%m%d_%H%M%S")
-    first_line = text.splitlines()[0] if text.splitlines() else 'output'
-    base = unicodedata.normalize('NFKD', first_line)
-    base = re.sub(r'[^A-Za-z0-9_-]+', '_', base)[:48] or 'output'
+    first_line_text = text.splitlines()[0] if text.splitlines() else "output"
+    base = unicodedata.normalize("NFKD", first_line_text)
+    base = re.sub(r"[^A-Za-z0-9_-]+", "_", base)[:48] or "output"
     fp = out_dir / f"find_{ts}_{base}.png"
     try:
         img.save(fp)
         _log.info(f"已保存图片: {fp}")
         return fp
-    except Exception as e:
-        _log.warning(f"保存图片失败: {e}")
+    except Exception as exc:
+        _log.warning(f"保存图片失败: {exc}")
         return None
 
 
@@ -165,6 +256,9 @@ IMAGE_BASE_URL = None
 if CFG.get("image_server") and CFG["image_server"].get("base_url"):
     IMAGE_BASE_URL = str(CFG["image_server"]["base_url"]).rstrip("/")
 IMAGE_CLEANUP_DELAY = int((CFG.get("image_cleanup") or {}).get("delay_seconds", 120))
+
+
+TIP = "用法: /find 关键字 —— 查询 FTL MV 事件"
 
 
 async def _send_image_if_configured(api: botpy.BotAPI, message: GroupMessage, image_path: Path | None) -> bool:
@@ -194,18 +288,16 @@ async def _cleanup_image_later(image_path: Path, delay: int = IMAGE_CLEANUP_DELA
         pass
 
 
-
-
 async def handle_find_new(api: botpy.BotAPI, message: GroupMessage, query: str):
     q = (query or "").strip()
     if not q:
-        await message.reply(content="用法: /find 关键词")
+        await message.reply(content=TIP)
         return
 
     res = search_once(q, DATA_DIR, max_depth=16, only_outcomes=False)
     kind = res.get("kind")
     if kind == "empty_query":
-        await message.reply(content="用法: /find 关键词")
+        await message.reply(content=TIP)
         return
     if kind == "not_found":
         return
@@ -248,7 +340,7 @@ class MyClient(botpy.Client):
             query = text[5:].strip()
             await handle_find_new(self.api, message, query)
             return
-        await message.reply(content=tip)
+        await message.reply(content=TIP)
 
 
 def run_bot() -> None:

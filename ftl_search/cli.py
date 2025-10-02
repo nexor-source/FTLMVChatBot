@@ -89,7 +89,7 @@ def run_interactive(args: argparse.Namespace) -> int:
                         print("[警告] 在文件中未找到目标事件。")
                     else:
                         lines: List[str] = []
-                        _summarize_event(target_event_el, reg, depth=0, max_depth=args.max_depth, visited=set(), out_lines=lines)
+                        _summarize_event(target_event_el, reg, depth=0, max_depth=args.max_depth, visited=set(), out_lines=lines, expanded=set())
                         if args.only_outcomes:
                             keys = ("战斗", "投降", "摧毁", "船员全灭", "逃跑", "敌舰逃走")
                             start_idx = None
@@ -119,7 +119,7 @@ def run_interactive(args: argparse.Namespace) -> int:
                 if args.show_mem:
                     _print_mem("before summarize")
                 lines: List[str] = []
-                _summarize_event(n.el, reg, depth=0, max_depth=args.max_depth, visited=set(), out_lines=lines)
+                _summarize_event(n.el, reg, depth=0, max_depth=args.max_depth, visited=set(), out_lines=lines, expanded=set())
                 if args.only_outcomes:
                     keys = ("战斗", "投降", "摧毁", "船员全灭", "逃跑", "敌舰逃走")
                     start_idx = None
@@ -326,7 +326,7 @@ def search_once(
                         target_event_el = el
                 if target_event_el is not None:
                     lines: List[str] = []
-                    _summarize_event(target_event_el, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines)
+                    _summarize_event(target_event_el, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines, expanded=set())
                     if only_outcomes:
                         keys = ("战斗", "投降", "摧毁", "船员全灭", "逃跑", "敌舰逃走")
                         start_idx = None
@@ -364,7 +364,7 @@ def search_once(
         buf = io.StringIO()
         with redirect_stdout(buf):
             lines: List[str] = []
-            _summarize_event(n.el, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines)
+            _summarize_event(n.el, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines, expanded=set())
             if only_outcomes:
                 keys = ("战斗", "投降", "摧毁", "船员全灭", "逃跑", "敌舰逃走")
                 start_idx = None
@@ -401,3 +401,4 @@ def search_once(
         return {"kind": "expand", "name": entry.name, "text": buf.getvalue().strip()}
     else:
         return {"kind": "names", "names": names}
+

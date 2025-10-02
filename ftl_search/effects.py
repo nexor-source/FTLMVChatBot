@@ -43,7 +43,7 @@ def extract_effects(event_el) -> List[str]:
                 cls = ch.attrib.get("class") or ch.attrib.get("type")
                 # optional skill hints
                 extras = []
-                for k in ("pilot", "combat", "all_skills"):
+                for k in ("pilot", "combat", "repair", "shields", "engines", "weapons", "all_skills"):
                     v = ch.attrib.get(k)
                     if v:
                         if k == "all_skills":

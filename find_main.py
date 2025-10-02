@@ -180,7 +180,7 @@ def save_text_as_image(text: str, out_dir: Path | None = None) -> Path | None:
             out.append(cur)
         return out
 
-    items: list[tuple[int, str, str | None, list[str]]] = []
+    items: list[tuple[int, str, str | None, list[str], bool]] = []
     for raw in text.splitlines():
         depth, kind, label, content = classify(raw)
         base_x = pad_x + depth * indent_w
@@ -190,15 +190,16 @@ def save_text_as_image(text: str, out_dir: Path | None = None) -> Path | None:
         if avail <= 40:
             avail = max_width - pad_x * 2
         lines = wrap_to_width(content, int(avail)) if content else [""]
-        items.append((depth, kind, label, lines))
+        has_req = kind == "choice" and "[req=" in raw
+        items.append((depth, kind, label, lines, has_req))
 
-    total_rows = sum(len(block) for _, _, _, block in items)
+    total_rows = sum(len(block) for _, _, _, block, _ in items)
     height = pad_y * 2 + total_rows * (line_h + line_gap)
     img = Image.new("RGB", (max_width, height), "white")
     painter = ImageDraw.Draw(img)
 
     y = pad_y
-    for depth, kind, label, lines in items:
+    for depth, kind, label, lines, has_req in items:
         base_x = pad_x + depth * indent_w
         block_h = (line_h + line_gap) * len(lines) - line_gap
         for i in range(depth):
@@ -232,7 +233,10 @@ def save_text_as_image(text: str, out_dir: Path | None = None) -> Path | None:
                         painter.rectangle([x, y, x + content_w, y + content_h], fill=bg)
                 except Exception:
                     pass
-            painter.text((x, y), ln, font=font, fill=(0, 0, 0))
+            text_color = (0, 0, 0)
+            if has_req:
+                text_color = (0, 102, 255)
+            painter.text((x, y), ln, font=font, fill=text_color)
             y += line_h + line_gap
             first_line = False
 

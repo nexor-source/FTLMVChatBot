@@ -190,7 +190,7 @@ def save_text_as_image(text: str, out_dir: Path | None = None) -> Path | None:
         if avail <= 40:
             avail = max_width - pad_x * 2
         lines = wrap_to_width(content, int(avail)) if content else [""]
-        has_req = kind == "choice" and "[req=" in raw
+        has_req = kind == "choice" and "[req=" in raw and "blue=false" not in raw
         items.append((depth, kind, label, lines, has_req))
 
     total_rows = sum(len(block) for _, _, _, block, _ in items)

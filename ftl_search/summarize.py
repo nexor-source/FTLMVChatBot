@@ -173,8 +173,15 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
         ctext_nodes = [t for t in list(ch) if _strip_namespace(getattr(t, "tag", "")) == "text"]
         ctext = _text_from_text_element(ctext_nodes[0], reg) if ctext_nodes else ""
         meta = []
-        if ch.attrib.get("blue") in ("true", "blue"):
+        b = ch.attrib.get("blue")
+
+        if b in ("true", "blue", "1"):
+
             meta.append("blue")
+
+        elif b in ("false", "0"):
+
+            meta.append("blue=false")
         if ch.attrib.get("req"):
             meta.append(f"req={ch.attrib.get('req')}")
         if ch.attrib.get("hidden") in ("true", "1"):

@@ -18,6 +18,9 @@ from .registry import (
 from .effects import extract_effects
 from .text_utils import abbrev_text, clip_line
 
+# Invisible sentinel to carry blue=false without showing in output text
+_BLUE_FALSE_SENTINEL = "\u2063\u2063\u2063\u2063"
+
 
 def _text_from_text_element(el, reg: Optional[Registry]) -> str:
     if el is None:
@@ -176,23 +179,68 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
         b = ch.attrib.get("blue")
 
         if b in ("true", "blue", "1"):
-
-            meta.append("blue")
-
+            pass
         elif b in ("false", "0"):
-
-            meta.append("blue=false")
+            pass
         if ch.attrib.get("req"):
             meta.append(f"req={ch.attrib.get('req')}")
         if ch.attrib.get("hidden") in ("true", "1"):
             meta.append("hidden")
         suffix = f" [{'; '.join(meta)}]" if meta else ""
+        if b in ("false", "0"):
+            suffix = suffix + _BLUE_FALSE_SENTINEL
         out_lines.append("  " * depth + f"选择: {abbrev_text(ctext)}{suffix}")
 
         nested_events = [t for t in list(ch) if _strip_namespace(getattr(t, "tag", "")) == "event"]
         nested_lists = [t for t in list(ch) if _strip_namespace(getattr(t, "tag", "")) == "eventList"]
         load_events = [t for t in list(ch) if _strip_namespace(getattr(t, "tag", "")) == "loadEvent"]
         load_eventlists = [t for t in list(ch) if _strip_namespace(getattr(t, "tag", "")) == "loadEventList"]
+
+        # [1] If immediate next level (x+1) contains OPTION_INVALID, skip this choice entirely.
+        try:
+            invalid = False
+            for ev in nested_events:
+                if getattr(ev, 'attrib', {}).get('load') == 'OPTION_INVALID':
+                    invalid = True
+                    break
+            if not invalid:
+                for le in load_events:
+                    if (le.text or "").strip() == 'OPTION_INVALID':
+                        invalid = True
+                        break
+            if not invalid:
+                for evl in nested_lists:
+                    load = evl.attrib.get("load")
+                    if load:
+                        for it in (reg.event_lists.get(load) or []):
+                            if getattr(it, 'attrib', {}).get('load') == 'OPTION_INVALID':
+                                invalid = True
+                                break
+                    else:
+                        for it in [t for t in list(evl) if _strip_namespace(getattr(t, "tag", "")) == "event"]:
+                            if getattr(it, 'attrib', {}).get('load') == 'OPTION_INVALID':
+                                invalid = True
+                                break
+                    if invalid:
+                        break
+            if not invalid:
+                for lel in load_eventlists:
+                    name = (lel.text or "").strip()
+                    if not name:
+                        continue
+                    for it in (reg.event_lists.get(name) or []):
+                        if getattr(it, 'attrib', {}).get('load') == 'OPTION_INVALID':
+                            invalid = True
+                            break
+                    if invalid:
+                        break
+            if invalid:
+                # remove the last appended line for this choice (which we emitted above)
+                if out_lines and out_lines[-1].startswith("  " * depth + "ѡ��:"):
+                    out_lines.pop()
+                continue
+        except Exception:
+            pass
 
         if len(nested_events) > 1:
             for idx, ev in enumerate(nested_events, 1):

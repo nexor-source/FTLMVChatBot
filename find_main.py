@@ -40,6 +40,9 @@ ROOT = Path(__file__).resolve().parent
 CFG = read(str(ROOT / "QQ_bot" / "config.yaml"))
 _log = logging.get_logger()
 
+# Invisible sentinel to carry blue=false without showing in output text
+_BLUE_FALSE_SENTINEL = "\u2063\u2063\u2063\u2063"
+
 
 def _locate_data_dir() -> Path:
     env = os.environ.get("FTL_DATA_DIR")
@@ -136,6 +139,11 @@ def save_text_as_image(text: str, out_dir: Path | None = None) -> Path | None:
 
     def classify(raw: str) -> tuple[int, str, str | None, str]:
         s = raw.rstrip("\r\n")
+        # Strip invisible sentinel markers from visible content
+        try:
+            s = s.replace(_BLUE_FALSE_SENTINEL, "")
+        except Exception:
+            pass
 
         depth = 0
         while s.startswith("  "):
@@ -190,7 +198,7 @@ def save_text_as_image(text: str, out_dir: Path | None = None) -> Path | None:
         if avail <= 40:
             avail = max_width - pad_x * 2
         lines = wrap_to_width(content, int(avail)) if content else [""]
-        has_req = kind == "choice" and "[req=" in raw and "blue=false" not in raw
+        has_req = kind == "choice" and "[req=" in raw and (_BLUE_FALSE_SENTINEL not in raw)
         items.append((depth, kind, label, lines, has_req))
 
     total_rows = sum(len(block) for _, _, _, block, _ in items)

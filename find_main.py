@@ -312,6 +312,7 @@ async def handle_find_new(api: botpy.BotAPI, message: GroupMessage, query: str):
         await message.reply(content=TIP)
         return
     if kind == "not_found":
+        await message.reply(content="未找到匹配事件。")
         return
     if kind == "names":
         names = list(res.get("names") or [])

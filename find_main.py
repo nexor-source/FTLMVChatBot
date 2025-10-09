@@ -270,7 +270,16 @@ if CFG.get("image_server") and CFG["image_server"].get("base_url"):
 IMAGE_CLEANUP_DELAY = int((CFG.get("image_cleanup") or {}).get("delay_seconds", 120))
 
 
-TIP = "用法: /find 关键字 —— 查询 FTL MV 事件"
+TIP_FIND = "用法: /find 关键字 —— 查询 FTL MV 事件"
+TIP_FIND_ID = "用法: /findid 事件ID —— 展开指定事件"
+HELP_TEXT = "\n".join(
+    [
+        "可用指令：",
+        "/find 关键字 —— 按文本关键字检索事件",
+        "/findid 事件ID —— 直接展开指定事件",
+        "/help —— 查看全部指令说明",
+    ]
+)
 
 
 async def _send_image_if_configured(api: botpy.BotAPI, message: GroupMessage, image_path: Path | None) -> bool:
@@ -300,19 +309,27 @@ async def _cleanup_image_later(image_path: Path, delay: int = IMAGE_CLEANUP_DELA
         pass
 
 
-async def handle_find_new(api: botpy.BotAPI, message: GroupMessage, query: str):
+async def handle_find_new(
+    api: botpy.BotAPI,
+    message: GroupMessage,
+    query: str,
+    *,
+    mode: str = "text",
+) -> None:
     q = (query or "").strip()
+    tip = TIP_FIND_ID if mode == "id" else TIP_FIND
     if not q:
-        await message.reply(content=TIP)
+        await message.reply(content=tip)
         return
 
-    res = search_once(q, DATA_DIR, max_depth=16, only_outcomes=False)
+    res = search_once(q, DATA_DIR, max_depth=16, only_outcomes=False, mode=mode)
     kind = res.get("kind")
     if kind == "empty_query":
-        await message.reply(content=TIP)
+        await message.reply(content=tip)
         return
     if kind == "not_found":
-        await message.reply(content="未找到匹配事件。")
+        not_found_msg = "未找到匹配的事件ID。" if mode == "id" else "未找到匹配事件。"
+        await message.reply(content=not_found_msg)
         return
     if kind == "names":
         names = list(res.get("names") or [])
@@ -349,11 +366,18 @@ class MyClient(botpy.Client):
         content = (message.content or "").strip()
         text = content.strip()
         low = text.lower()
-        if low.startswith("/find"):
-            query = text[5:].strip()
-            await handle_find_new(self.api, message, query)
+        if low.startswith("/help"):
+            await message.reply(content=HELP_TEXT)
             return
-        await message.reply(content=TIP)
+        if low.startswith("/findid"):
+            query = text[len("/findid"):].strip()
+            await handle_find_new(self.api, message, query, mode="id")
+            return
+        if low.startswith("/find"):
+            query = text[len("/find"):].strip()
+            await handle_find_new(self.api, message, query, mode="text")
+            return
+        await message.reply(content=f"{TIP_FIND}\n{TIP_FIND_ID}")
 
 
 def run_bot() -> None:

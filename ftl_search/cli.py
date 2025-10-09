@@ -271,14 +271,21 @@ def cli_main(argv: Optional[List[str]] = None) -> int:
 
 
 # Library-style single-shot search entry to keep QQ bot consistent with CLI.
+
 def search_once(
     query: str,
     data_dir: Path,
     *,
     max_depth: int = 16,
     only_outcomes: bool = False,
+    mode: str = "auto",
 ) -> dict:
     """Run one search using the same logic as the CLI interactive flow.
+
+    mode:
+      - "auto": behave like the interactive CLI (event-id exact match + text search).
+      - "text": skip direct event-id matching and only perform text-based search.
+      - "id": only attempt exact event-id expansion; no text search fallback.
 
     Returns a dict:
     - {kind: 'expand', name: str, text: str}
@@ -290,35 +297,27 @@ def search_once(
     if not q:
         return {"kind": "empty_query"}
 
+    mode_normalized = (mode or "auto").strip().lower()
+    if mode_normalized not in {"auto", "text", "id"}:
+        raise ValueError(f"invalid search mode: {mode}")
+
     reg = build_registry(data_dir)
     entries = index_events(data_dir, reg, max_expand_depth=max_depth)
-    nodes = index_event_nodes(data_dir, reg)
 
-    # Try exact event-id match (case-insensitive)
-    ql = q.lower()
-    entry_by_id = None
-    for e in entries:
-        try:
-            if e.name == q or e.name.lower() == ql:
-                entry_by_id = e
-                break
-        except Exception:
-            continue
-    if entry_by_id is not None:
-        # Summarize directly (skip locate step)
+    def _expand_entry(entry: EventEntry) -> dict:
         import io
         from contextlib import redirect_stdout
 
         buf = io.StringIO()
         with redirect_stdout(buf):
-            print(f"匹配事件: {entry_by_id.name} ({entry_by_id.file})")
+            print(f"匹配事件: {entry.name} ({entry.file})")
             print("定位文本: 未能在事件内部精确定位（可能匹配来自子事件/列表）")
-            root = _parse_xml_etree(entry_by_id.file)
+            root = _parse_xml_etree(entry.file)
             if root is not None:
                 target_event_el = None
                 best_children = -1
                 for name, el in _iter_named_events_etree(root):
-                    if name != entry_by_id.name:
+                    if name != entry.name:
                         continue
                     ch_cnt = len(list(el))
                     if ch_cnt > best_children:
@@ -343,7 +342,27 @@ def search_once(
                             lines = original_lines
                     for ln in lines:
                         print(clip_line(ln, 100))
-        return {"kind": "expand", "name": entry_by_id.name, "text": buf.getvalue().strip()}
+        return {"kind": "expand", "name": entry.name, "text": buf.getvalue().strip()}
+
+    if mode_normalized != "text":
+        ql = q.lower()
+        entry_by_id = None
+        for e in entries:
+            try:
+                if e.name == q or e.name.lower() == ql:
+                    entry_by_id = e
+                    break
+            except Exception:
+                continue
+        if entry_by_id is not None:
+            return _expand_entry(entry_by_id)
+        if mode_normalized == "id":
+            return {"kind": "not_found"}
+
+    if mode_normalized == "id":
+        return {"kind": "not_found"}
+
+    nodes = index_event_nodes(data_dir, reg)
 
     # Locate by node search first (same as CLI)
     hit_nodes = _search_nodes(nodes, q)
@@ -401,4 +420,3 @@ def search_once(
         return {"kind": "expand", "name": entry.name, "text": buf.getvalue().strip()}
     else:
         return {"kind": "names", "names": names}
-

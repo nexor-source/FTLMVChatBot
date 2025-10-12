@@ -10,9 +10,61 @@
 
 from __future__ import annotations
 
+import re
 from typing import List
 
 from .registry import _strip_namespace
+
+_TERM_TRANSLATIONS = {
+    "autoreward": "自动奖励",
+    "scrap": "废料",
+    "scrap_only": "废料奖励",
+    "fuel": "燃料",
+    "fuel_only": "燃料奖励",
+    "missile": "导弹",
+    "missiles": "导弹",
+    "missle": "导弹",
+    "missile_only": "导弹奖励",
+    "missiles_only": "导弹奖励",
+    "missle_only": "导弹奖励",
+    "droneparts": "无人机部件",
+    "drone_parts": "无人机部件",
+    "drone-part": "无人机部件",
+    "drone": "无人机",
+    "droneparts_only": "无人机部件奖励",
+    "crew": "船员",
+    "boarders": "敌方登舰",
+    "pursuit": "追击进度",
+    "status": "状态",
+    "upgrade": "系统升级",
+    "system": "系统",
+    "quest": "任务",
+    "store": "商店",
+    "unlock": "解锁",
+    "weapon": "武器",
+    "augment": "部件",
+    "var": "变量",
+    "damage": "损伤",
+    "repair": "修复",
+    "level": "等级",
+    "standard": "标准奖励",
+    "low": "低级",
+    "med": "中级",
+    "high": "高级",
+}
+
+_TERM_PATTERNS = [
+    (re.compile(rf"\b{re.escape(src)}\b", re.IGNORECASE), dst)
+    for src, dst in _TERM_TRANSLATIONS.items()
+]
+
+
+def _localize_effect_text(text: str) -> str:
+    """Replace common outcome tokens with Chinese equivalents."""
+    localized = text
+    for pattern, repl in _TERM_PATTERNS:
+        localized = pattern.sub(repl, localized)
+    return localized
 
 
 def extract_effects(event_el) -> List[str]:
@@ -76,9 +128,9 @@ def extract_effects(event_el) -> List[str]:
                             clone_ok = True
                             break
                 eff = f"crew -{amt}"
-                # 展示更清晰：标注可被克隆舱复活
+                # 展示更清晰：标注可由克隆舱复活
                 if clone_ok:
-                    eff += " (可克隆复活)"
+                    eff += " (可由克隆舱复活)"
                 effects.append(eff)
             elif tag == "variable":
                 name = ch.attrib.get("name")
@@ -144,7 +196,8 @@ def extract_effects(event_el) -> List[str]:
     seen = set()
     out: List[str] = []
     for e in effects:
-        if e not in seen:
-            seen.add(e)
-            out.append(e)
+        localized = _localize_effect_text(e)
+        if localized not in seen:
+            seen.add(localized)
+            out.append(localized)
     return out

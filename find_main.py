@@ -43,6 +43,8 @@ _log = logging.get_logger()
 # Invisible sentinel to carry blue=false without showing in output text
 _BLUE_FALSE_SENTINEL = "\u2063\u2063\u2063\u2063"
 
+_DEBUG_TIMING = os.environ.get("FTL_SEARCH_TIMING", "").lower() not in {"", "0", "false", "off"}
+
 
 def _locate_data_dir() -> Path:
     env = os.environ.get("FTL_DATA_DIR")
@@ -322,7 +324,12 @@ async def handle_find_new(
         await message.reply(content=tip)
         return
 
+    timing_start = time.perf_counter() if _DEBUG_TIMING else None
     res = search_once(q, DATA_DIR, max_depth=16, only_outcomes=False, mode=mode)
+    if timing_start is not None:
+        elapsed = time.perf_counter() - timing_start
+        sample = q if len(q) <= 30 else q[:27] + "..."
+        print(f"[timing] search_once {elapsed:.3f}s (mode={mode}, query={sample})", flush=True)
     kind = res.get("kind")
     if kind == "empty_query":
         await message.reply(content=tip)

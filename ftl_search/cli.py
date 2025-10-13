@@ -3,14 +3,111 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import time
 from pathlib import Path
-from typing import Optional, List, Set
+import threading
+from typing import Optional, List, Set, Dict, Tuple
 
 from .registry import index_events_expanded as index_events, index_event_nodes, build_registry, EventEntry, Registry, EventNodeEntry
 from .summarize import show_single_event_detail, _parse_xml_etree, _iter_named_events_etree, _summarize_event
 from .text_utils import clip_line
 from .mem import get_memory_usage
+
+_DEBUG_TIMING = os.environ.get("FTL_SEARCH_TIMING", "").lower() not in {"", "0", "false", "off"}
+
+# 缓存可通过环境变量关闭：设置 FTL_SEARCH_DISABLE_CACHE 为非空/true 即可。
+_CACHE_DISABLED = os.environ.get("FTL_SEARCH_DISABLE_CACHE", "").lower() in {"1", "true", "yes", "on"}
+_CACHE_ENABLED = not _CACHE_DISABLED
+
+
+def _timing_report(stage: str, elapsed: float, total: Optional[float] = None) -> None:
+    if not _DEBUG_TIMING:
+        return
+    msg = f"[ftl_search timing] {stage}: {elapsed:.3f}s"
+    if total is not None:
+        msg += f" (total {total:.3f}s)"
+    print(msg, flush=True)
+
+
+_CACHE_LOCK = threading.Lock()
+_REGISTRY_CACHE: Dict[str, Registry] = {}
+_ENTRIES_CACHE: Dict[Tuple[str, int], List[EventEntry]] = {}
+_NODES_CACHE: Dict[str, List[EventNodeEntry]] = {}
+
+
+def _cache_key_for_data_dir(data_dir: Path) -> str:
+    try:
+        return str(data_dir.resolve())
+    except Exception:
+        return str(data_dir)
+
+
+def _ensure_registry(data_dir: Path) -> Tuple[Registry, bool, float]:
+    """Return (registry, built_now, elapsed)."""
+    if not _CACHE_ENABLED:
+        t0 = time.perf_counter()
+        reg = build_registry(data_dir)
+        return reg, True, time.perf_counter() - t0
+
+    key = _cache_key_for_data_dir(data_dir)
+    with _CACHE_LOCK:
+        cached = _REGISTRY_CACHE.get(key)
+    if cached is not None:
+        return cached, False, 0.0
+
+    t0 = time.perf_counter()
+    reg = build_registry(data_dir)
+    elapsed = time.perf_counter() - t0
+    with _CACHE_LOCK:
+        _REGISTRY_CACHE[key] = reg
+        # 同步清理依赖缓存，以免引用旧 registry 的数据
+        stale_entries = [ek for ek in _ENTRIES_CACHE if ek[0] == key]
+        for ek in stale_entries:
+            _ENTRIES_CACHE.pop(ek, None)
+        _NODES_CACHE.pop(key, None)
+    return reg, True, elapsed
+
+
+def _ensure_entries(data_dir: Path, reg: Registry, max_depth: int) -> Tuple[List[EventEntry], bool, float]:
+    if not _CACHE_ENABLED:
+        t0 = time.perf_counter()
+        entries = index_events(data_dir, reg, max_expand_depth=max_depth)
+        return entries, True, time.perf_counter() - t0
+
+    key = (_cache_key_for_data_dir(data_dir), max_depth)
+    with _CACHE_LOCK:
+        cached = _ENTRIES_CACHE.get(key)
+    if cached is not None:
+        return cached, False, 0.0
+
+    t0 = time.perf_counter()
+    entries = index_events(data_dir, reg, max_expand_depth=max_depth)
+    elapsed = time.perf_counter() - t0
+    with _CACHE_LOCK:
+        _ENTRIES_CACHE[key] = entries
+    return entries, True, elapsed
+
+
+def _ensure_nodes(data_dir: Path, reg: Registry) -> Tuple[List[EventNodeEntry], bool, float]:
+    if not _CACHE_ENABLED:
+        t0 = time.perf_counter()
+        nodes = index_event_nodes(data_dir, reg)
+        return nodes, True, time.perf_counter() - t0
+
+    key = _cache_key_for_data_dir(data_dir)
+    with _CACHE_LOCK:
+        cached = _NODES_CACHE.get(key)
+    if cached is not None:
+        return cached, False, 0.0
+
+    t0 = time.perf_counter()
+    nodes = index_event_nodes(data_dir, reg)
+    elapsed = time.perf_counter() - t0
+    with _CACHE_LOCK:
+        _NODES_CACHE[key] = nodes
+    return nodes, True, elapsed
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -293,6 +390,8 @@ def search_once(
     - {kind: 'not_found'}
     - {kind: 'empty_query'}
     """
+    total_start = time.perf_counter()
+
     q = (query or "").strip()
     if not q:
         return {"kind": "empty_query"}
@@ -301,8 +400,13 @@ def search_once(
     if mode_normalized not in {"auto", "text", "id"}:
         raise ValueError(f"invalid search mode: {mode}")
 
-    reg = build_registry(data_dir)
-    entries = index_events(data_dir, reg, max_expand_depth=max_depth)
+    reg, reg_built, reg_elapsed = _ensure_registry(data_dir)
+    total_after_reg = time.perf_counter() - total_start
+    _timing_report("build_registry" + ("" if reg_built else " (cached)"), reg_elapsed, total_after_reg)
+
+    entries, entries_built, entries_elapsed = _ensure_entries(data_dir, reg, max_depth)
+    total_after_entries = time.perf_counter() - total_start
+    _timing_report("index_events" + ("" if entries_built else " (cached)"), entries_elapsed, total_after_entries)
 
     def _expand_entry(entry: EventEntry) -> dict:
         import io
@@ -362,7 +466,9 @@ def search_once(
     if mode_normalized == "id":
         return {"kind": "not_found"}
 
-    nodes = index_event_nodes(data_dir, reg)
+    nodes, nodes_built, nodes_elapsed = _ensure_nodes(data_dir, reg)
+    total_after_nodes = time.perf_counter() - total_start
+    _timing_report("index_event_nodes" + ("" if nodes_built else " (cached)"), nodes_elapsed, total_after_nodes)
 
     # Locate by node search first (same as CLI)
     hit_nodes = _search_nodes(nodes, q)

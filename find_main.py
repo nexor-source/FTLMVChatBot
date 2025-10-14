@@ -343,8 +343,13 @@ async def handle_find_new(
         if not names:
             return
         if len(names) > 5:
+            reply_text = f"匹配到 {len(names)} 个事件，请提供更具体的关键词。"
+            _log.info("即将回复(>5 matches): %s", reply_text)
+            await message.reply(content=reply_text)
             return
-        await message.reply(content="\n".join(names))
+        reply_text = "\n".join(names)
+        _log.info("即将回复(names): %s", reply_text.replace("\n", "\\n"))
+        await message.reply(content=reply_text)
         return
     if kind == "expand":
         text = str(res.get("text") or "").strip()
@@ -375,6 +380,14 @@ class MyClient(botpy.Client):
         low = text.lower()
         if low.startswith("/help"):
             await message.reply(content=HELP_TEXT)
+            return
+        if low.startswith("/say"):
+            say_text = text[len("/say"):].strip()
+            if not say_text:
+                await message.reply(content="请在 /say 后添加要发送的内容。")
+                return
+            _log.info("即将通过 /say 回复: %s", say_text)
+            await message.reply(content=say_text)
             return
         if low.startswith("/findid"):
             query = text[len("/findid"):].strip()

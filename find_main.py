@@ -402,7 +402,7 @@ class MyClient(botpy.Client):
 
 def run_bot() -> None:
     intents = botpy.Intents(public_messages=True)
-    client = MyClient(intents=intents, is_sandbox=True)
+    client = MyClient(intents=intents)
     client.run(appid=CFG["appid"], secret=CFG["secret"]) 
 
 

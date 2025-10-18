@@ -342,13 +342,19 @@ async def handle_find_new(
         names = list(res.get("names") or [])
         if not names:
             return
-        if len(names) > 5:
-            reply_text = f"匹配到 {len(names)} 个事件，请提供更具体的关键词。"
-            _log.info("即将回复(>5 matches): %s", reply_text)
+        match_count = int(res.get("match_count") or len(names))
+        note = str(res.get("note") or "").strip()
+        if match_count > 5:
+            reply_text = f"匹配到 {match_count} 个事件，建议提供更多关键字。"
+            _log.info("回复多匹配(>5 matches): %s", reply_text)
             await message.reply(content=reply_text)
             return
-        reply_text = "\n".join(names)
-        _log.info("即将回复(names): %s", reply_text.replace("\n", "\\n"))
+        lines = []
+        if note:
+            lines.append(note)
+        lines.extend(names)
+        reply_text = "\n".join(lines)
+        _log.info("回复事件列表: %s", reply_text.replace("\n", "\\n"))
         await message.reply(content=reply_text)
         return
     if kind == "expand":
@@ -408,4 +414,5 @@ def run_bot() -> None:
 
 if __name__ == "__main__":
     run_bot()
+
 

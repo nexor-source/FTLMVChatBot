@@ -136,6 +136,7 @@ def run_interactive(args: argparse.Namespace) -> int:
         _print_mem("after build_registry")
     entries = index_events(data_dir, reg, max_expand_depth=args.max_depth)
     nodes = index_event_nodes(data_dir, reg)
+    uid_lookup = {n.uid: n for n in nodes if getattr(n, "uid", None)}
     if args.show_mem:
         _print_mem("after index_events + index_event_nodes")
     print(f"索引完成: 事件共 {len(entries)} 条（仅统计具名 <event>）。")
@@ -243,12 +244,10 @@ def run_interactive(args: argparse.Namespace) -> int:
                 if len(hit_nodes) > 5:
                     print(f"匹配事件过多：{len(hit_nodes)} 个（请提供更具体的关键词）")
                 else:
-                    for n in hit_nodes:
-                        if getattr(n, 'name', None):
-                            print(n.name)
-                        else:
-                            snip = clip_line(n.text, 40)
-                            print(f"{n.file} | {snip}")
+                    labels = _format_node_match_labels(hit_nodes, uid_lookup, data_dir)
+                    print("匹配到少量事件，事件ID分别如下:")
+                    for label in labels:
+                        print(label)
                 continue
             # 兼容旧逻辑：无命中或仅命中具名列表
             names = [n.name for n in hit_nodes if getattr(n, 'name', None)]
@@ -340,6 +339,92 @@ def _minimal_event_nodes(nodes: List[EventNodeEntry]) -> List[EventNodeEntry]:
             if a in uids:
                 drop.add(a)
     return [n for n in nodes if n.uid not in drop]
+
+
+def _nearest_named_ancestor(node: EventNodeEntry, uid_lookup: Dict[str, EventNodeEntry]) -> Optional[str]:
+    """Return the closest ancestor event name, if any."""
+    for anc_uid in reversed(getattr(node, "ancestors", []) or []):
+        anc = uid_lookup.get(anc_uid)
+        if anc and getattr(anc, "name", None):
+            return anc.name
+    return None
+
+
+def _relative_to_data(path: Optional[Path], data_dir: Path) -> str:
+    if path is None:
+        return "(unknown)"
+    try:
+        return str(path.relative_to(data_dir))
+    except Exception:
+        return str(path)
+
+
+def _format_node_match_labels(
+    nodes: List[EventNodeEntry],
+    uid_lookup: Dict[str, EventNodeEntry],
+    data_dir: Path,
+) -> List[str]:
+    """Build user-facing labels for matched nodes, grouping anonymous children by ancestor."""
+    order: List[Tuple[str, str]] = []
+    order_set: Set[Tuple[str, str]] = set()
+    counts: Dict[Tuple[str, str], int] = {}
+    meta: Dict[Tuple[str, str], Dict[str, str]] = {}
+
+    for node in nodes:
+        name = getattr(node, "name", None)
+        if name:
+            key = ("named", name)
+            counts[key] = counts.get(key, 0) + 1
+            if key not in order_set:
+                order.append(key)
+                order_set.add(key)
+                meta[key] = {"name": name}
+            continue
+
+        parent_name = _nearest_named_ancestor(node, uid_lookup)
+        if parent_name:
+            key = ("parent", parent_name)
+            counts[key] = counts.get(key, 0) + 1
+            if key not in order_set:
+                order.append(key)
+                order_set.add(key)
+                meta[key] = {"name": parent_name}
+            continue
+
+        rel = _relative_to_data(getattr(node, "file", None), data_dir)
+        uid = getattr(node, "uid", "")
+        key = ("orphan", uid)
+        counts[key] = counts.get(key, 0) + 1
+        if key not in order_set:
+            order.append(key)
+            order_set.add(key)
+            meta[key] = {"rel": rel, "uid": uid}
+
+    labels: List[str] = []
+    for key in order:
+        category, _ = key
+        info = meta.get(key, {})
+        count = counts.get(key, 1)
+        if category == "named":
+            label = info.get("name", "(unknown)")
+            if count > 1:
+                label = f"{label} ×{count}"
+        elif category == "parent":
+            label = info.get("name", "(unknown)")
+            suffix = "匿名子事件"
+            if count > 1:
+                suffix += f"×{count}"
+            label = f"{label} ({suffix})"
+        else:
+            rel = info.get("rel") or "(unknown)"
+            uid = info.get("uid")
+            label = f"匿名事件（无父事件，文件 {rel}"
+            if uid:
+                label += f"，节点 {uid}"
+            label += ")"
+        labels.append(label)
+
+    return labels
 
 
 def _maybe_start_tracemalloc() -> None:
@@ -467,20 +552,24 @@ def search_once(
         return {"kind": "not_found"}
 
     nodes, nodes_built, nodes_elapsed = _ensure_nodes(data_dir, reg)
+    uid_lookup = {n.uid: n for n in nodes if getattr(n, "uid", None)}
     total_after_nodes = time.perf_counter() - total_start
     _timing_report("index_event_nodes" + ("" if nodes_built else " (cached)"), nodes_elapsed, total_after_nodes)
 
     # Locate by node search first (same as CLI)
     hit_nodes = _search_nodes(nodes, q)
     hit_nodes = _minimal_event_nodes(hit_nodes)
-    # If multiple nodes and have named ones, list those names
-    if len(hit_nodes) > 1:
-        names = []
-        for n in hit_nodes:
-            if getattr(n, 'name', None):
-                names.append(n.name)
-        if names:
-            return {"kind": "names", "names": names}
+    total_node_hits = len(hit_nodes)
+    if total_node_hits > 1:
+        labels = _format_node_match_labels(hit_nodes, uid_lookup, data_dir)
+        if labels:
+            note = "匹配到少量事件，事件ID分别如下:" if 1 < total_node_hits <= 5 else None
+            return {
+                "kind": "names",
+                "names": labels,
+                "match_count": total_node_hits,
+                "note": note,
+            }
     # Single node hit: summarize that node directly (handles anonymous events)
     if len(hit_nodes) == 1:
         n = hit_nodes[0]
@@ -525,4 +614,5 @@ def search_once(
             show_single_event_detail(entry, q, reg, max_depth=max_depth, only_outcomes=only_outcomes)
         return {"kind": "expand", "name": entry.name, "text": buf.getvalue().strip()}
     else:
-        return {"kind": "names", "names": names}
+        note = "匹配到少量事件，事件ID分别如下:" if 1 < len(names) <= 5 else None
+        return {"kind": "names", "names": names, "match_count": len(names), "note": note}

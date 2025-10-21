@@ -210,6 +210,7 @@ def run_interactive(args: argparse.Namespace) -> int:
             hit_nodes = _search_nodes(nodes, q)
             # 仅保留“最小事件”：去掉任何作为其它命中事件祖先的事件
             hit_nodes = _minimal_event_nodes(hit_nodes)
+            hit_nodes = _dedupe_named_nodes(hit_nodes)
             # 若仅命中一个事件节点（含匿名），直接从该最小节点展开
             if len(hit_nodes) == 1:
                 n = hit_nodes[0]
@@ -339,6 +340,37 @@ def _minimal_event_nodes(nodes: List[EventNodeEntry]) -> List[EventNodeEntry]:
             if a in uids:
                 drop.add(a)
     return [n for n in nodes if n.uid not in drop]
+
+
+_TRANSLATED_PATH_MARKERS = ("zh", "chinese", "汉化", "简体", "chs", "cn")
+
+
+def _is_translation_path(path: Optional[Path]) -> bool:
+    if path is None:
+        return False
+    lowered = str(path).lower()
+    return any(marker in lowered for marker in _TRANSLATED_PATH_MARKERS)
+
+
+def _dedupe_named_nodes(nodes: List[EventNodeEntry]) -> List[EventNodeEntry]:
+    """Collapse duplicate named event nodes while preferring translated files."""
+    result: List[EventNodeEntry] = []
+    name_to_index: Dict[str, int] = {}
+    for node in nodes:
+        name = getattr(node, "name", None)
+        if not name:
+            result.append(node)
+            continue
+        existing_index = name_to_index.get(name)
+        if existing_index is None:
+            name_to_index[name] = len(result)
+            result.append(node)
+            continue
+        existing = result[existing_index]
+        if _is_translation_path(getattr(node, "file", None)) and not _is_translation_path(getattr(existing, "file", None)):
+            result[existing_index] = node
+        # If both share the same translation status, keep the earlier one to retain deterministic order.
+    return result
 
 
 def _nearest_named_ancestor(node: EventNodeEntry, uid_lookup: Dict[str, EventNodeEntry]) -> Optional[str]:
@@ -559,6 +591,7 @@ def search_once(
     # Locate by node search first (same as CLI)
     hit_nodes = _search_nodes(nodes, q)
     hit_nodes = _minimal_event_nodes(hit_nodes)
+    hit_nodes = _dedupe_named_nodes(hit_nodes)
     total_node_hits = len(hit_nodes)
     if total_node_hits > 1:
         labels = _format_node_match_labels(hit_nodes, uid_lookup, data_dir)

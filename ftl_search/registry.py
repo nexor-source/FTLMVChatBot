@@ -90,6 +90,15 @@ def _parse_xml_etree(path: Path):
         return None
 
 
+def _xml_language_preference_key(path: Path) -> tuple[int, str]:
+    """XML 路径排序 key：让中文资源最后处理，从而覆盖同名英文事件。"""
+    lower_parts = [p.lower() for p in path.parts]
+    zh_markers = ("zh", "简体", "chinese", "chs", "cn", "汉化")
+    is_zh = any(any(marker in part for marker in zh_markers) for part in lower_parts)
+    # 英文（非中文）文件优先，中文延后，保证中文覆盖
+    return (0 if not is_zh else 1, str(path).lower())
+
+
 _EVENT_BLOCK_RE = re.compile(
     r"<event\b(?P<attrs>[^>]*)>(?P<body>.*?)</event>", re.IGNORECASE | re.DOTALL
 )
@@ -287,11 +296,14 @@ def index_events_expanded(
 
     # 兜底：用正则补充解析失败但包含具名 <event> 的文件
     known = set(reg.events.keys())
-    xml_files = [
-        f
-        for f in data_dir.rglob("*")
-        if f.is_file() and (f.suffix.lower() == ".xml" or str(f).lower().endswith(".xml.append"))
-    ]
+    xml_files = sorted(
+        [
+            f
+            for f in data_dir.rglob("*")
+            if f.is_file() and (f.suffix.lower() == ".xml" or str(f).lower().endswith(".xml.append"))
+        ],
+        key=_xml_language_preference_key,
+    )
     for fp in xml_files:
         try:
             for nm, txt in _fallback_parse_events_text(fp):
@@ -316,11 +328,14 @@ def index_events(data_dir: Path) -> List[EventEntry]:
     输入: data_dir 数据目录
     返回: EventEntry 列表（包含全文与去空白文本两种形式）
     """
-    xml_files = [
-        f
-        for f in data_dir.rglob("*")
-        if f.is_file() and (f.suffix.lower() == ".xml" or str(f).lower().endswith(".xml.append"))
-    ]
+    xml_files = sorted(
+        [
+            f
+            for f in data_dir.rglob("*")
+            if f.is_file() and (f.suffix.lower() == ".xml" or str(f).lower().endswith(".xml.append"))
+        ],
+        key=_xml_language_preference_key,
+    )
 
     entries: List[EventEntry] = []
     for fp in xml_files:
@@ -367,11 +382,14 @@ def build_registry(data_dir: Path) -> Registry:
     ship_defs: Dict[str, Dict[str, Dict[str, Any]]] = {}
     event_ancestors: Dict[str, List[str]] = {}
 
-    xml_files = [
-        f
-        for f in data_dir.rglob("*")
-        if f.is_file() and (f.suffix.lower() == ".xml" or str(f).lower().endswith(".xml.append"))
-    ]
+    xml_files = sorted(
+        [
+            f
+            for f in data_dir.rglob("*")
+            if f.is_file() and (f.suffix.lower() == ".xml" or str(f).lower().endswith(".xml.append"))
+        ],
+        key=_xml_language_preference_key,
+    )
 
     for fp in xml_files:
         root = _parse_xml_etree(fp)
@@ -496,11 +514,14 @@ def index_event_nodes(data_dir: Path, reg: Optional["Registry"] = None) -> List[
     entries: List[EventNodeEntry] = []
     uid_counter = 0
 
-    xml_files = [
-        f
-        for f in data_dir.rglob("*")
-        if f.is_file() and (f.suffix.lower() == ".xml" or str(f).lower().endswith(".xml.append"))
-    ]
+    xml_files = sorted(
+        [
+            f
+            for f in data_dir.rglob("*")
+            if f.is_file() and (f.suffix.lower() == ".xml" or str(f).lower().endswith(".xml.append"))
+        ],
+        key=_xml_language_preference_key,
+    )
 
     for fp in xml_files:
         root = _parse_xml_etree(fp)

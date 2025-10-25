@@ -77,8 +77,25 @@ def extract_effects(event_el) -> List[str]:
                 continue
             if tag == "autoReward":
                 val = (ch.text or "").strip()
-                lvl = ch.attrib.get("level")
-                effects.append(f"autoReward({lvl+': ' if lvl else ''}{val})")
+                lvl = (ch.attrib.get("level") or "").strip()
+                if lvl:
+                    lvl_cn = {
+                        "standard": "标准",
+                        "low": "低级",
+                        "med": "中级",
+                        "medium": "中级",
+                        "mid": "中级",
+                        "high": "高级",
+                    }.get(lvl.lower(), lvl)
+                    if val:
+                        effects.append(f"{lvl_cn}奖励（{val}）")
+                    else:
+                        effects.append(f"{lvl_cn}奖励")
+                else:
+                    if val:
+                        effects.append(f"奖励（{val}）")
+                    else:
+                        effects.append("奖励")
             elif tag == "item_modify":
                 for it in list(ch):
                     if _strip_namespace(getattr(it, "tag", "")) == "item":

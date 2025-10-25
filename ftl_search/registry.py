@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import copy
 import html
 import re
 from dataclasses import dataclass
@@ -513,6 +514,8 @@ def index_event_nodes(data_dir: Path, reg: Optional["Registry"] = None) -> List[
 
     entries: List[EventNodeEntry] = []
     uid_counter = 0
+    ship_uid_counter = 0
+    ship_branch_tags = {"surrender", "destroyed", "deadCrew", "escape", "gotaway"}
 
     xml_files = sorted(
         [
@@ -531,7 +534,7 @@ def index_event_nodes(data_dir: Path, reg: Optional["Registry"] = None) -> List[
         stack: List[str] = []  # ancestor event uids
 
         def visit(node):
-            nonlocal uid_counter
+            nonlocal uid_counter, ship_uid_counter
             try:
                 tag = _strip_namespace(getattr(node, "tag", ""))
             except Exception:
@@ -559,6 +562,37 @@ def index_event_nodes(data_dir: Path, reg: Optional["Registry"] = None) -> List[
                     )
                 )
                 stack.append(cur_uid)
+            if tag == 'ship':
+                ship_name = node.attrib.get('load') or node.attrib.get('name') or "(ship)"
+                for branch in list(node):
+                    try:
+                        btag = _strip_namespace(getattr(branch, "tag", ""))
+                    except Exception:
+                        continue
+                    if btag not in ship_branch_tags:
+                        continue
+                    try:
+                        base_branch = _gather_subtree_text(branch)
+                    except Exception:
+                        base_branch = ""
+                    extra_branch = _gather_textlist_in_subtree(branch)
+                    branch_text = re.sub(r"\s+", " ", (base_branch + " " + extra_branch).strip())
+                    if not branch_text:
+                        continue
+                    ship_uid_counter += 1
+                    uid = f"SH{ship_uid_counter}"
+                    synthetic = copy.deepcopy(branch)
+                    entries.append(
+                        EventNodeEntry(
+                            uid=uid,
+                            name=f"{ship_name}:{btag}",
+                            file=fp,
+                            el=synthetic,
+                            text=branch_text,
+                            text_nows=re.sub(r"\s+", "", branch_text),
+                            ancestors=list(stack),
+                        )
+                    )
             for ch in list(node):
                 visit(ch)
             if is_event:

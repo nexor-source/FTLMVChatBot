@@ -17,21 +17,21 @@ from .registry import _strip_namespace
 
 _TERM_TRANSLATIONS = {
     "autoreward": "自动奖励",
-    "scrap": "废料",
-    "scrap_only": "废料奖励",
-    "fuel": "燃料",
-    "fuel_only": "燃料奖励",
+    "scrap": "~",
+    "scrap_only": "~奖励",
+    "fuel": "{",
+    "fuel_only": "{奖励",
     "missile": "导弹",
-    "missiles": "导弹",
-    "missle": "导弹",
-    "missile_only": "导弹奖励",
-    "missiles_only": "导弹奖励",
-    "missle_only": "导弹奖励",
-    "droneparts": "无人机部件",
-    "drone_parts": "无人机部件",
-    "drone-part": "无人机部件",
+    "missiles": "}",
+    "missle": "}",
+    "missile_only": "}奖励",
+    "missiles_only": "}奖励",
+    "missle_only": "}奖励",
+    "droneparts": "|",
+    "drone_parts": "|",
+    "drone-part": "|",
     "drone": "无人机",
-    "droneparts_only": "无人机部件奖励",
+    "droneparts_only": "|奖励",
     "crew": "船员",
     "boarders": "敌方登舰",
     "pursuit": "追击进度",
@@ -85,7 +85,7 @@ def extract_effects(event_el) -> List[str]:
                         typ = it.attrib.get("type")
                         mn = it.attrib.get("min")
                         mx = it.attrib.get("max")
-                        rng = (f"{mn}..{mx}" if mn and mx and mn != mx else (mn or mx or "?"))
+                        rng = (f"{mn}到{mx}" if mn and mx and mn != mx else (mn or mx or "?"))
                         effects.append(f"{typ} {rng}")
             elif tag in ("weapon", "drone", "augment"):
                 nm = ch.attrib.get("name")
@@ -165,7 +165,7 @@ def extract_effects(event_el) -> List[str]:
                 mx = ch.attrib.get("max")
                 amt = ch.attrib.get("amount")
                 if mn or mx:
-                    rng = f"{mn}..{mx}" if mn and mx else (mn or mx or "?")
+                    rng = f"{mn}到{mx}" if mn and mx else (mn or mx or "?")
                 else:
                     rng = amt or "?"
                 effects.append(f"boarders {cls} {rng}")

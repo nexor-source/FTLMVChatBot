@@ -82,8 +82,12 @@ def _strip_file_path_from_header(text: str) -> str:
 
 def _choose_font():
     from PIL import ImageFont
-    candidates = [
-        os.environ.get("FONT_PATH"),
+    font_dir = ROOT / "font"
+    custom_fonts = []
+    if font_dir.is_dir():
+        for pattern in ("*.ttf", "*.ttc", "*.otf", "*.otc"):
+            custom_fonts.extend(sorted(font_dir.glob(pattern)))
+    candidates = [os.environ.get("FONT_PATH")] + [str(p) for p in custom_fonts] + [
         "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/simhei.ttf",
         "/System/Library/Fonts/PingFang.ttc",

@@ -423,14 +423,13 @@ def _format_node_match_labels(
                 meta[key] = {"name": parent_name}
             continue
 
-        rel = _relative_to_data(getattr(node, "file", None), data_dir)
         uid = getattr(node, "uid", "")
         key = ("orphan", uid)
         counts[key] = counts.get(key, 0) + 1
         if key not in order_set:
             order.append(key)
             order_set.add(key)
-            meta[key] = {"rel": rel, "uid": uid}
+            meta[key] = {"uid": uid}
 
     labels: List[str] = []
     for key in order:
@@ -440,20 +439,17 @@ def _format_node_match_labels(
         if category == "named":
             label = info.get("name", "(unknown)")
             if count > 1:
-                label = f"{label} ×{count}"
+                label = f"{label} x{count}"
         elif category == "parent":
             label = info.get("name", "(unknown)")
             suffix = "匿名子事件"
             if count > 1:
-                suffix += f"×{count}"
-            label = f"{label} ({suffix})"
+                suffix += f"x{count}"
+            label = f"{label}（{suffix}）"
         else:
-            rel = info.get("rel") or "(unknown)"
             uid = info.get("uid")
-            label = f"匿名事件（无父事件，文件 {rel}"
-            if uid:
-                label += f"，节点 {uid}"
-            label += ")"
+            base = "匿名事件"
+            label = f"{base}（节点 {uid}）" if uid else base
         labels.append(label)
 
     return labels
@@ -565,6 +561,35 @@ def search_once(
                         print(clip_line(ln, 100))
         return {"kind": "expand", "name": entry.name, "text": buf.getvalue().strip()}
 
+    def _render_node(node: EventNodeEntry) -> str:
+        lines: List[str] = []
+        _summarize_event(node.el, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines, expanded=set())
+        if only_outcomes:
+            keys = ("战斗", "投降", "摧毁", "船员全灭", "逃跑", "敌舰逃走")
+            start_idx = None
+            original_lines = list(lines)
+            for i2, ln in enumerate(lines):
+                if any(k in ln for k in keys):
+                    start_idx = i2
+                    break
+            if start_idx is not None:
+                lines = lines[start_idx:]
+            else:
+                lines = [ln for ln in lines if any(k in ln for k in keys)]
+            if not lines:
+                lines = original_lines
+        uid = getattr(node, "uid", None)
+        if getattr(node, "name", None):
+            header = f"匹配事件: {node.name}"
+            if uid:
+                header += f"（节点 {uid}）"
+        else:
+            header = f"匹配事件: 匿名事件（节点 {uid or '?'}）"
+        body = [clip_line(ln, 100) for ln in lines]
+        return "\n".join([header] + body)
+
+    nodes_tuple: Optional[Tuple[List[EventNodeEntry], bool, float]] = None
+
     if mode_normalized != "text":
         ql = q.lower()
         entry_by_id = None
@@ -577,13 +602,28 @@ def search_once(
                 continue
         if entry_by_id is not None:
             return _expand_entry(entry_by_id)
+
+        if nodes_tuple is None:
+            nodes_tuple = _ensure_nodes(data_dir, reg)
+        nodes_for_ids = nodes_tuple[0]
+        node_by_uid = None
+        for node in nodes_for_ids:
+            try:
+                uid = getattr(node, "uid", "")
+                if uid and uid.lower() == ql:
+                    node_by_uid = node
+                    break
+            except Exception:
+                continue
+        if node_by_uid is not None:
+            display_name = getattr(node_by_uid, "name", None) or getattr(node_by_uid, "uid", None) or "(anonymous)"
+            return {"kind": "expand", "name": display_name, "text": _render_node(node_by_uid)}
         if mode_normalized == "id":
             return {"kind": "not_found"}
 
-    if mode_normalized == "id":
-        return {"kind": "not_found"}
-
-    nodes, nodes_built, nodes_elapsed = _ensure_nodes(data_dir, reg)
+    if nodes_tuple is None:
+        nodes_tuple = _ensure_nodes(data_dir, reg)
+    nodes, nodes_built, nodes_elapsed = nodes_tuple
     uid_lookup = {n.uid: n for n in nodes if getattr(n, "uid", None)}
     total_after_nodes = time.perf_counter() - total_start
     _timing_report("index_event_nodes" + ("" if nodes_built else " (cached)"), nodes_elapsed, total_after_nodes)
@@ -606,31 +646,8 @@ def search_once(
     # Single node hit: summarize that node directly (handles anonymous events)
     if len(hit_nodes) == 1:
         n = hit_nodes[0]
-        import io
-        from contextlib import redirect_stdout
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            lines: List[str] = []
-            _summarize_event(n.el, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines, expanded=set())
-            if only_outcomes:
-                keys = ("战斗", "投降", "摧毁", "船员全灭", "逃跑", "敌舰逃走")
-                start_idx = None
-                original_lines = list(lines)
-                for i2, ln in enumerate(lines):
-                    if any(k in ln for k in keys):
-                        start_idx = i2
-                        break
-                if start_idx is not None:
-                    lines = lines[start_idx:]
-                else:
-                    lines = [ln for ln in lines if any(k in ln for k in keys)]
-                if not lines:
-                    lines = original_lines
-            header = (f"匹配事件: {n.name} ({n.file})" if getattr(n, 'name', None) else f"匹配匿名事件 ({n.file})")
-            print(header)
-            for ln in lines:
-                print(clip_line(ln, 100))
-        return {"kind": "expand", "name": getattr(n, 'name', None) or "(anonymous)", "text": buf.getvalue().strip()}
+        display_name = getattr(n, "name", None) or getattr(n, "uid", None) or "(anonymous)"
+        return {"kind": "expand", "name": display_name, "text": _render_node(n)}
     # No useful node hits -> derive names; if still empty, fall back to expanded entry search
     names = [n.name for n in hit_nodes if getattr(n, 'name', None)]
     if not names:
@@ -649,3 +666,4 @@ def search_once(
     else:
         note = "匹配到少量事件，事件ID分别如下:" if 1 < len(names) <= 5 else None
         return {"kind": "names", "names": names, "match_count": len(names), "note": note}
+

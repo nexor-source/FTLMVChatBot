@@ -11,6 +11,7 @@ Simplified per requested logic:
 from __future__ import annotations
 
 import os
+import random
 import re
 import sys
 import time
@@ -349,8 +350,12 @@ async def handle_find_new(
         match_count = int(res.get("match_count") or len(names))
         note = str(res.get("note") or "").strip()
         if match_count > 5:
-            reply_text = f"匹配到 {match_count} 个事件，建议提供更多关键字。"
-            _log.info("回复多匹配(>5 matches): %s", reply_text)
+            sample_count = min(5, len(names))
+            sample_names = random.sample(names, sample_count) if sample_count else []
+            header = f"匹配到 {match_count} 个事件，随机展示其中 {sample_count} 个："
+            lines = [header] + sample_names
+            reply_text = "\n".join(lines)
+            _log.info("回复多匹配(>5 matches): %s", reply_text.replace("\n", "\\n"))
             await message.reply(content=reply_text)
             return
         lines = []

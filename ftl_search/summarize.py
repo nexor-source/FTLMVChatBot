@@ -426,14 +426,27 @@ def show_single_event_detail(entry, query: str, reg: Registry, max_depth: int = 
             print("未找到该事件列表的定义。")
             return
         fake_event = ET.Element("event")
+        choice = ET.Element("choice")
+        choice_text = ET.Element("text")
+        choice_text.text = f"[事件列表] {entry.name}"
+        choice.append(choice_text)
         load_el = ET.Element("loadEventList")
         load_el.text = entry.name
-        fake_event.append(load_el)
+        choice.append(load_el)
+        fake_event.append(choice)
         lines: List[str] = []
         expanded: Set[str] = set()
         _summarize_event(fake_event, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines, expanded=expanded)
         if only_outcomes:
-            keys = ("战斗", "投降", "摧毁", "船员全灭", "奖励", "敌舰逃走")
+            keys = (
+                "战斗",
+                "投降",
+                "摧毁",
+                "船员全灭",
+                "奖励",
+                "敌舰逃走",
+                "战斗胜利",
+            )
             start_idx = None
             original_lines = list(lines)
             for i2, ln in enumerate(lines):

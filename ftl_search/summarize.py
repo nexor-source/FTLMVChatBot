@@ -79,40 +79,62 @@ def _handle_event_ref(
     visited: Set[str],
     out_lines: List[str],
     expanded: Set[str],
+    expanded_ships: Set[str],
+    current_ship: Optional[str],
 ):
-
     load = ev_el.attrib.get("load")
     if not load:
-        _summarize_event(ev_el, reg, depth + 1, max_depth, visited, out_lines, expanded)
+        _summarize_event(
+            ev_el,
+            reg,
+            depth + 1,
+            max_depth,
+            visited,
+            out_lines,
+            expanded,
+            expanded_ships,
+            current_ship,
+        )
         return
     if load == "COMBAT_CHECK":
         return
+
+    indent = "  " * (depth + 1)
     if load in reg.events:
         key = f"E:{load}"
-        indent = "  " * (depth + 1)
         label = f"→ 事件 {load}"
         if key in visited:
-            out_lines.append(indent + f"{label} (已在当前路径前文展开，检测到循环，略)")
+            out_lines.append(indent + f"{label} (当前路径已展开，检测到循环引用)")
             return
         if key in expanded:
-            out_lines.append(indent + f"{label} （已在当前路径前文展开，略）")
+            out_lines.append(indent + f"{label} (当前路径已展开，跳过重复)")
             return
         _, ref_el = reg.events[load]
         visited.add(key)
         expanded.add(key)
         out_lines.append(indent + label)
-        _summarize_event(ref_el, reg, depth + 2, max_depth, visited, out_lines, expanded)
+        _summarize_event(
+            ref_el,
+            reg,
+            depth + 2,
+            max_depth,
+            visited,
+            out_lines,
+            expanded,
+            expanded_ships,
+            current_ship,
+        )
         visited.discard(key)
         return
+
     if load in reg.event_lists:
         key = f"L:{load}"
-        indent = "  " * (depth + 1)
         label = f"→ 事件列表 {load}"
         if key in visited:
-            out_lines.append(indent + f"{label} (已在当前路径前文展开，检测到循环，略)")
+            out_lines.append(indent + f"{label} (当前路径已展开，检测到循环引用)")
             return
         if key in expanded:
-            out_lines.append(indent + f"{label} （已在当前路径前文展开，略）")
+            out_lines.append(indent + f"{label} (当前路径已展开，跳过重复)")
             return
         visited.add(key)
         expanded.add(key)
@@ -142,18 +164,47 @@ def _handle_event_ref(
                 rep, cnt = groups[key_item]
                 p = cnt * 100.0 / total
                 p_str = f"{p:.0f}%" if abs(p - round(p)) < 0.05 else f"{p:.1f}%"
-                out_lines.append("  " * (depth + 2) + f"随机分支{idx} (p={p_str})：")
+                out_lines.append("  " * (depth + 2) + f"分支{idx} (p={p_str})：")
                 if getattr(rep, "attrib", {}).get("load"):
-                    _handle_event_ref(rep, reg, depth + 2, max_depth, visited, out_lines, expanded)
+                    _handle_event_ref(
+                        rep,
+                        reg,
+                        depth + 2,
+                        max_depth,
+                        visited,
+                        out_lines,
+                        expanded,
+                        expanded_ships,
+                        current_ship,
+                    )
                 else:
-                    _summarize_event(rep, reg, depth + 3, max_depth, visited, out_lines, expanded)
+                    _summarize_event(
+                        rep,
+                        reg,
+                        depth + 3,
+                        max_depth,
+                        visited,
+                        out_lines,
+                        expanded,
+                        expanded_ships,
+                        current_ship,
+                    )
         visited.discard(key)
         return
-    out_lines.append("  " * (depth + 1) + f"→ 未知 {load} (未找到作为事件或事件列表)")
 
+    out_lines.append(indent + f"→ 未知 {load} (未找到对应事件或事件列表)")
 
-
-def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visited: Set[str], out_lines: List[str], expanded: Set[str]):
+def _summarize_event(
+    event_el,
+    reg: Registry,
+    depth: int,
+    max_depth: int,
+    visited: Set[str],
+    out_lines: List[str],
+    expanded: Set[str],
+    expanded_ships: Set[str],
+    current_ship: Optional[str],
+):
     if depth > max_depth:
         out_lines.append("  " * depth + "…")
         return
@@ -169,8 +220,88 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
     if eff:
         out_lines.append("  " * depth + f"效果: {', '.join(eff)}")
 
+    children = list(event_el)
+    active_ship = current_ship
+    choice_queue: List[Tuple[object, Optional[str]]] = []
+
+    def _process_ship_node(node, inherited):
+        ship_load = node.attrib.get('load') or node.attrib.get('name')
+        updated = ship_load or inherited
+        hostile = (node.attrib.get('hostile') or 'false').lower() == 'true'
+        if not hostile:
+            return updated
+        ship_id = ship_load or inherited
+        if ship_id and ship_id in expanded_ships:
+            out_lines.append('  ' * depth + f'\u6218\u6597: {ship_id}（前文已展开）')
+            return ship_id or updated
+        label = ship_id or '\u672a\u77e5'
+        out_lines.append('  ' * depth + f'\u6218\u6597: {label}')
+        if ship_id:
+            expanded_ships.add(ship_id)
+        inline = {k: [t for t in list(node) if _strip_namespace(getattr(t, 'tag', '')) == k]
+                  for k in ('surrender', 'destroyed', 'deadCrew', 'escape', 'gotaway')}
+        defs_key = ship_load or ship_id
+        defs = reg.ship_defs.get(defs_key) if defs_key and hasattr(reg, 'ship_defs') else None
+
+        def nodes_for(key: str):
+            if inline.get(key):
+                return inline[key]
+            if not defs:
+                return []
+            ent = defs.get(key)
+            if not ent:
+                return []
+            if 'load' in ent:
+                dummy = type(event_el)('event')
+                dummy.attrib['load'] = ent['load']
+                return [dummy]
+            if 'el' in ent:
+                return [ent['el']]
+            return []
+
+        for key, label_text in (('surrender', '\u6295\u964d'), ('destroyed', '\u6467\u6bc1(\u80dc\u5229)'), ('deadCrew', '\u8239\u5458\u5168\u706d(\u80dc\u5229)'), ('escape', '\u9003\u79bb'), ('gotaway', '\u654c\u8230\u9003\u8d70')):
+            subs = nodes_for(key)
+            if not subs:
+                continue
+            out_lines.append('  ' * (depth + 1) + f'{label_text}:')
+            for sub in subs:
+                if hasattr(sub, 'attrib') and sub.attrib.get('load'):
+                    if sub.attrib.get('load') == 'COMBAT_CHECK':
+                        continue
+                    _handle_event_ref(
+                        sub,
+                        reg,
+                        depth + 1,
+                        max_depth,
+                        visited,
+                        out_lines,
+                        expanded,
+                        expanded_ships,
+                        ship_id,
+                    )
+                else:
+                    _summarize_event(
+                        sub,
+                        reg,
+                        depth + 2,
+                        max_depth,
+                        visited,
+                        out_lines,
+                        expanded,
+                        expanded_ships,
+                        ship_id,
+                    )
+        return ship_id or updated
+
+    for node in children:
+        tag = _strip_namespace(getattr(node, 'tag', ''))
+        if tag == 'ship':
+            active_ship = _process_ship_node(node, active_ship)
+        elif tag == 'choice':
+            choice_queue.append((node, active_ship))
+
     # 选择与后续
-    for ch in list(event_el):
+    for ch, choice_ship in choice_queue:
         if _strip_namespace(getattr(ch, "tag", "")) != "choice":
             continue
         ctext_nodes = [t for t in list(ch) if _strip_namespace(getattr(t, "tag", "")) == "text"]
@@ -245,11 +376,11 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
         if len(nested_events) > 1:
             for idx, ev in enumerate(nested_events, 1):
                 out_lines.append("  " * (depth + 1) + f"→ 随机分支{idx}：")
-                _handle_event_ref(ev, reg, depth + 1, max_depth, visited, out_lines, expanded)
+                _handle_event_ref(ev, reg, depth + 1, max_depth, visited, out_lines, expanded, expanded_ships, choice_ship)
         else:
             for ev in nested_events:
                 # 单个内联事件：内容只比“选择”深一级，避免看起来跨两级
-                _handle_event_ref(ev, reg, depth, max_depth, visited, out_lines, expanded)
+                _handle_event_ref(ev, reg, depth, max_depth, visited, out_lines, expanded, expanded_ships, choice_ship)
 
         for evl in nested_lists:
             load = evl.attrib.get("load")
@@ -282,9 +413,9 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
                         p_str = f"{p:.0f}%" if abs(p - round(p)) < 0.05 else f"{p:.1f}%"
                         out_lines.append("  " * (depth + 2) + f"随机分支{idx} (p={p_str})：")
                         if getattr(rep, 'attrib', {}).get("load"):
-                            _handle_event_ref(rep, reg, depth + 2, max_depth, visited, out_lines, expanded)
+                            _handle_event_ref(rep, reg, depth + 2, max_depth, visited, out_lines, expanded, expanded_ships, choice_ship)
                         else:
-                            _summarize_event(rep, reg, depth + 3, max_depth, visited, out_lines, expanded)
+                            _summarize_event(rep, reg, depth + 3, max_depth, visited, out_lines, expanded, expanded_ships, choice_ship)
             else:
                 children = [t for t in list(evl) if _strip_namespace(getattr(t, "tag", "")) == "event"]
                 out_lines.append("  " * (depth + 1) + f"→ 事件列表（内联）共 {len(children)} 个：")
@@ -314,9 +445,9 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
                         p_str = f"{p:.0f}%" if abs(p - round(p)) < 0.05 else f"{p:.1f}%"
                         out_lines.append("  " * (depth + 2) + f"随机分支{idx} (p={p_str})：")
                         if getattr(rep, 'attrib', {}).get("load"):
-                            _handle_event_ref(rep, reg, depth + 2, max_depth, visited, out_lines, expanded)
+                            _handle_event_ref(rep, reg, depth + 2, max_depth, visited, out_lines, expanded, expanded_ships, choice_ship)
                         else:
-                            _summarize_event(rep, reg, depth + 3, max_depth, visited, out_lines, expanded)
+                            _summarize_event(rep, reg, depth + 3, max_depth, visited, out_lines, expanded, expanded_ships, choice_ship)
 
         for le in load_events:
             name = (le.text or "").strip()
@@ -325,7 +456,7 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
             dummy = type(event_el)('event')
             dummy.attrib['load'] = name
             out_lines.append("  " * (depth + 1) + f"→ 事件 {name}")
-            _handle_event_ref(dummy, reg, depth + 1, max_depth, visited, out_lines, expanded)
+            _handle_event_ref(dummy, reg, depth + 1, max_depth, visited, out_lines, expanded, expanded_ships, choice_ship)
 
         for lel in load_eventlists:
             name = (lel.text or "").strip()
@@ -359,54 +490,9 @@ def _summarize_event(event_el, reg: Registry, depth: int, max_depth: int, visite
                     p_str = f"{p:.0f}%" if abs(p - round(p)) < 0.05 else f"{p:.1f}%"
                     out_lines.append("  " * (depth + 2) + f"随机分支{idx} (p={p_str})：")
                     if getattr(rep, 'attrib', {}).get("load"):
-                        _handle_event_ref(rep, reg, depth + 2, max_depth, visited, out_lines, expanded)
+                        _handle_event_ref(rep, reg, depth + 2, max_depth, visited, out_lines, expanded, expanded_ships, choice_ship)
                     else:
-                        _summarize_event(rep, reg, depth + 3, max_depth, visited, out_lines, expanded)
-
-    # 嵌入战斗：展示败亡结果（优先内联，其次回退全局映射）
-    for node in list(event_el):
-        try:
-            if _strip_namespace(getattr(node, "tag", "")) != "ship":
-                continue
-            if node.attrib.get("hostile", "false").lower() != "true":
-                continue
-            ship_key = node.attrib.get("load") or node.attrib.get("name") or "(未知)"
-            out_lines.append("  " * depth + f"战斗: {ship_key}")
-
-            inline = {k: [t for t in list(node) if _strip_namespace(getattr(t, "tag", "")) == k]
-                      for k in ("surrender", "destroyed", "deadCrew", "escape", "gotaway")}
-            defs = reg.ship_defs.get(ship_key) if hasattr(reg, 'ship_defs') else None
-
-            def nodes_for(key: str):
-                if inline.get(key):
-                    return inline[key]
-                if not defs:
-                    return []
-                ent = defs.get(key)
-                if not ent:
-                    return []
-                if 'load' in ent:
-                    d = type(event_el)('event')
-                    d.attrib['load'] = ent['load']
-                    return [d]
-                if 'el' in ent:
-                    return [ent['el']]
-                return []
-
-            for k, label in (("surrender", "投降"), ("destroyed", "摧毁(胜利)"), ("deadCrew", "船员全灭(胜利)"), ("escape", "尝试逃跑"), ("gotaway", "敌舰逃走")):
-                subs = nodes_for(k)
-                if not subs:
-                    continue
-                out_lines.append("  " * (depth + 1) + f"{label}:")
-                for sub in subs:
-                    if hasattr(sub, 'attrib') and sub.attrib.get('load'):
-                        if sub.attrib.get('load') == 'COMBAT_CHECK':
-                            continue
-                        _handle_event_ref(sub, reg, depth + 1, max_depth, visited, out_lines, expanded)
-                    else:
-                        _summarize_event(sub, reg, depth + 2, max_depth, visited, out_lines, expanded)
-        except Exception:
-            continue
+                        _summarize_event(rep, reg, depth + 3, max_depth, visited, out_lines, expanded, expanded_ships, choice_ship)
 
 
 def show_single_event_detail(entry, query: str, reg: Registry, max_depth: int = 3, only_outcomes: bool = False, max_line_len: int = 80):
@@ -436,7 +522,7 @@ def show_single_event_detail(entry, query: str, reg: Registry, max_depth: int = 
         fake_event.append(choice)
         lines: List[str] = []
         expanded: Set[str] = set()
-        _summarize_event(fake_event, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines, expanded=expanded)
+        _summarize_event(fake_event, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines, expanded=expanded, expanded_ships=set(), current_ship=None)
         if only_outcomes:
             keys = (
                 "战斗",
@@ -492,7 +578,7 @@ def show_single_event_detail(entry, query: str, reg: Registry, max_depth: int = 
         print("定位文本: 未能在事件内部精确定位（可能匹配来自子事件/列表）。")
         lines: List[str] = []
         expanded: Set[str] = set()
-        _summarize_event(target_event_el, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines, expanded=expanded)
+        _summarize_event(target_event_el, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines, expanded=expanded, expanded_ships=set(), current_ship=None)
     else:
         i = s.find(query)
         pre = s[max(0, i - 20):i]
@@ -509,9 +595,9 @@ def show_single_event_detail(entry, query: str, reg: Registry, max_depth: int = 
         if choice_ancestor is not None:
             fake_event = type(target_event_el)('event')
             fake_event.append(choice_ancestor)
-            _summarize_event(fake_event, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines, expanded=expanded)
+            _summarize_event(fake_event, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines, expanded=expanded, expanded_ships=set(), current_ship=None)
         else:
-            _summarize_event(target_event_el, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines, expanded=expanded)
+            _summarize_event(target_event_el, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines, expanded=expanded, expanded_ships=set(), current_ship=None)
 
     # 仅显示战斗结算（如没有，则回退完整）
     if only_outcomes:

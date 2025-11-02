@@ -373,6 +373,24 @@ def _dedupe_named_nodes(nodes: List[EventNodeEntry]) -> List[EventNodeEntry]:
     return result
 
 
+def _prefer_translated_entry(entries: List[EventEntry]) -> Optional[EventEntry]:
+    if not entries:
+        return None
+    for entry in entries:
+        if _is_translation_path(getattr(entry, "file", None)):
+            return entry
+    return entries[0]
+
+
+def _prefer_translated_node(nodes: List[EventNodeEntry]) -> Optional[EventNodeEntry]:
+    if not nodes:
+        return None
+    for node in nodes:
+        if _is_translation_path(getattr(node, "file", None)):
+            return node
+    return nodes[0]
+
+
 def _nearest_named_ancestor(node: EventNodeEntry, uid_lookup: Dict[str, EventNodeEntry]) -> Optional[str]:
     """Return the closest ancestor event name, if any."""
     for anc_uid in reversed(getattr(node, "ancestors", []) or []):
@@ -527,38 +545,7 @@ def search_once(
 
         buf = io.StringIO()
         with redirect_stdout(buf):
-            print(f"匹配事件: {entry.name} ({entry.file})")
-            print("定位文本: 未能在事件内部精确定位（可能匹配来自子事件/列表）")
-            root = _parse_xml_etree(entry.file)
-            if root is not None:
-                target_event_el = None
-                best_children = -1
-                for name, el in _iter_named_events_etree(root):
-                    if name != entry.name:
-                        continue
-                    ch_cnt = len(list(el))
-                    if ch_cnt > best_children:
-                        best_children = ch_cnt
-                        target_event_el = el
-                if target_event_el is not None:
-                    lines: List[str] = []
-                    _summarize_event(target_event_el, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines, expanded=set())
-                    if only_outcomes:
-                        keys = ("战斗", "投降", "摧毁", "船员全灭", "逃跑", "敌舰逃走")
-                        start_idx = None
-                        original_lines = list(lines)
-                        for i2, ln in enumerate(lines):
-                            if any(k in ln for k in keys):
-                                start_idx = i2
-                                break
-                        if start_idx is not None:
-                            lines = lines[start_idx:]
-                        else:
-                            lines = [ln for ln in lines if any(k in ln for k in keys)]
-                        if not lines:
-                            lines = original_lines
-                    for ln in lines:
-                        print(clip_line(ln, 100))
+            show_single_event_detail(entry, q, reg, max_depth=max_depth, only_outcomes=only_outcomes)
         return {"kind": "expand", "name": entry.name, "text": buf.getvalue().strip()}
 
     def _render_node(node: EventNodeEntry) -> str:
@@ -592,32 +579,40 @@ def search_once(
 
     if mode_normalized != "text":
         ql = q.lower()
-        entry_by_id = None
+        entry_matches: List[EventEntry] = []
         for e in entries:
             try:
                 if e.name == q or e.name.lower() == ql:
-                    entry_by_id = e
-                    break
+                    entry_matches.append(e)
             except Exception:
                 continue
-        if entry_by_id is not None:
-            return _expand_entry(entry_by_id)
+        preferred_entry = _prefer_translated_entry(entry_matches)
+        if preferred_entry is not None:
+            return _expand_entry(preferred_entry)
 
         if nodes_tuple is None:
             nodes_tuple = _ensure_nodes(data_dir, reg)
         nodes_for_ids = nodes_tuple[0]
-        node_by_uid = None
+        candidates: List[EventNodeEntry] = []
         for node in nodes_for_ids:
             try:
                 uid = getattr(node, "uid", "")
                 if uid and uid.lower() == ql:
-                    node_by_uid = node
-                    break
+                    candidates.append(node)
             except Exception:
                 continue
-        if node_by_uid is not None:
-            display_name = getattr(node_by_uid, "name", None) or getattr(node_by_uid, "uid", None) or "(anonymous)"
-            return {"kind": "expand", "name": display_name, "text": _render_node(node_by_uid)}
+        if not candidates:
+            for node in nodes_for_ids:
+                try:
+                    name = getattr(node, "name", None)
+                    if name and (name == q or name.lower() == ql):
+                        candidates.append(node)
+                except Exception:
+                    continue
+        preferred_node = _prefer_translated_node(candidates)
+        if preferred_node is not None:
+            display_name = getattr(preferred_node, "name", None) or getattr(preferred_node, "uid", None) or "(anonymous)"
+            return {"kind": "expand", "name": display_name, "text": _render_node(preferred_node)}
         if mode_normalized == "id":
             return {"kind": "not_found"}
 

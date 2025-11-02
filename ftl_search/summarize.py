@@ -420,6 +420,36 @@ def show_single_event_detail(entry, query: str, reg: Registry, max_depth: int = 
     - only_outcomes: 仅显示战斗结算（无结算则回退完整分支）
     - max_line_len: 单行最大长度
     """
+    if getattr(entry, "kind", "event") == "eventList":
+        print(f"匹配事件列表: {entry.name} ({entry.file})")
+        if entry.name not in getattr(reg, "event_lists", {}):
+            print("未找到该事件列表的定义。")
+            return
+        fake_event = ET.Element("event")
+        load_el = ET.Element("loadEventList")
+        load_el.text = entry.name
+        fake_event.append(load_el)
+        lines: List[str] = []
+        expanded: Set[str] = set()
+        _summarize_event(fake_event, reg, depth=0, max_depth=max_depth, visited=set(), out_lines=lines, expanded=expanded)
+        if only_outcomes:
+            keys = ("战斗", "投降", "摧毁", "船员全灭", "奖励", "敌舰逃走")
+            start_idx = None
+            original_lines = list(lines)
+            for i2, ln in enumerate(lines):
+                if any(k in ln for k in keys):
+                    start_idx = i2
+                    break
+            if start_idx is not None:
+                lines = lines[start_idx:]
+            else:
+                lines = [ln for ln in lines if any(k in ln for k in keys)]
+            if not lines:
+                lines = original_lines
+        for ln in lines:
+            print(clip_line(ln, max_line_len))
+        return
+
     root = _parse_xml_etree(entry.file)
     if root is None:
         print("[警告] 无法解析该事件文件，跳过详细展开。")

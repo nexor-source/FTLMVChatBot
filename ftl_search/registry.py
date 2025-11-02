@@ -27,6 +27,7 @@ class EventEntry:
     file: Path
     text: str
     text_nows: str
+    kind: str = "event"
 
 
 @dataclass
@@ -45,6 +46,7 @@ class Registry:
     data_dir: Path
     events: Dict[str, Tuple[Path, Any]]
     event_lists: Dict[str, List[Any]]
+    event_list_files: Dict[str, Path]
     text_lists: Dict[str, List[str]]
     ship_defs: Dict[str, Dict[str, Dict[str, Any]]]
     event_ancestors: Dict[str, List[str]]  # 事件名 -> 其所有具名祖先事件名（外层->内层）用来做“仅保留最小事件”逻辑
@@ -295,6 +297,33 @@ def index_events_expanded(
         except Exception:
             continue
 
+    # 将 eventList 视作具名条目，便于按 ID 定位
+    event_list_files = getattr(reg, "event_list_files", {}) if reg is not None else {}
+    for name, items in getattr(reg, "event_lists", {}).items():
+        try:
+            text = _expand_eventlist_by_name(name, 0, set())
+            if not text:
+                parts: List[str] = []
+                for it in items or []:
+                    load_ref = getattr(it, "attrib", {}).get("load") if hasattr(it, "attrib") else None
+                    if load_ref:
+                        parts.append(load_ref)
+                    else:
+                        parts.append(_gather_subtree_text(it))
+                text = re.sub(r"\s+", " ", " ".join(p for p in parts if p).strip())
+            file = event_list_files.get(name, reg.data_dir if reg is not None else data_dir)
+            entries.append(
+                EventEntry(
+                    name=name,
+                    file=file,
+                    text=text,
+                    text_nows=re.sub(r"\s+", "", text),
+                    kind="eventList",
+                )
+            )
+        except Exception:
+            continue
+
     # 兜底：用正则补充解析失败但包含具名 <event> 的文件
     known = set(reg.events.keys())
     xml_files = sorted(
@@ -379,6 +408,7 @@ def build_registry(data_dir: Path) -> Registry:
     """
     events: Dict[str, Tuple[Path, Any]] = {}
     event_lists: Dict[str, List[Any]] = {}
+    event_list_files: Dict[str, Path] = {}
     text_lists: Dict[str, List[str]] = {}
     ship_defs: Dict[str, Dict[str, Dict[str, Any]]] = {}
     event_ancestors: Dict[str, List[str]] = {}
@@ -421,8 +451,8 @@ def build_registry(data_dir: Path) -> Registry:
                             items = [
                                 ch for ch in list(el) if _strip_namespace(getattr(ch, "tag", "")) == "event"
                             ]
-                            if items:
-                                event_lists[name] = items
+                            event_lists[name] = items
+                            event_list_files[name] = fp
                     elif tag == "textList":
                         name = el.attrib.get("name")
                         if name:
@@ -472,6 +502,7 @@ def build_registry(data_dir: Path) -> Registry:
         data_dir=data_dir,
         events=events,
         event_lists=event_lists,
+        event_list_files=event_list_files,
         text_lists=text_lists,
         ship_defs=ship_defs,
         event_ancestors=event_ancestors,
